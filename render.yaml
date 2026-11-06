@@ -1,0 +1,16 @@
+# Alternative host: Render web service + external Postgres (e.g. Neon). Blueprint deploy needs the code in a Git repo.
+services:
+  - type: web
+    name: mob-crm
+    runtime: docker
+    plan: starter   # $7/mo always-on; "free" works but sleeps after 15 min idle (~1 min wake-up)
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
