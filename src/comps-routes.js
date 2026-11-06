@@ -4,7 +4,7 @@ const fs = require('fs'); const os = require('os'); const path = require('path')
 const multer = require('multer'); const { parse } = require('csv-parse/sync');
 const { esc, layout, fmtDate, isoDate, money, numf, pct, qs, STATE_NAMES } = require('./views');
 const C = require('./comps-core'); const Att = require('./attachments'); const { SOURCES } = require('./feeds');
-const Area = require('./area-comps'); const paths = require('./paths');
+const Area = require('./area-comps'); const geo = require('./geo/reference'); const paths = require('./paths');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const nz = (v) => { if (v === undefined || v === null) return null; const s = String(v).trim(); return s === '' ? null : s; };
 const vbadge = (v) => `<span class="badge ${v ? 's-interested' : 's-attempted'}">${v ? 'Verified' : 'Unverified'}</span>`;
@@ -357,17 +357,34 @@ module.exports = function mountComps(app, getDb, wrap) {
   async function areaCompsHtml(p) {
     const state = p.state ? String(p.state).toUpperCase() : '';
     const city = p.city || '';
-    const sLoc = Area.latLng(p);
+    const origin = Area.searchOrigin(p);
+    const radius = Area.radiusMiles();
     const params = [];
     const parts = [];
-    if (state && city) { params.push(state, city); parts.push(`(c.state = $${params.length - 1} AND lower(c.city) = lower($${params.length}))`); }
-    else if (state && !city) { params.push(state); parts.push(`c.state = $${params.length}`); }
-    if (sLoc) {
-      const dLat = Area.RADIUS_MILES / 69;
-      const dLng = Area.RADIUS_MILES / (69 * Math.cos(sLoc.lat * Math.PI / 180) || 1);
-      params.push(sLoc.lat - dLat, sLoc.lat + dLat, sLoc.lng - dLng, sLoc.lng + dLng);
+    const cityNorm = geo.normKey(city);
+    if (state && cityNorm) {
+      params.push(state, cityNorm);
+      parts.push(`(c.state = $${params.length - 1} AND lower(regexp_replace(COALESCE(c.city, ''), '[^a-zA-Z]', '', 'g')) = $${params.length})`);
+    }
+    if (origin) {
+      const dLat = radius / 69;
+      const dLng = radius / (69 * Math.cos(origin.lat * Math.PI / 180) || 1);
+      params.push(origin.lat - dLat, origin.lat + dLat, origin.lng - dLng, origin.lng + dLng);
       const n = params.length;
       parts.push(`(c.lat BETWEEN $${n - 3} AND $${n - 2} AND c.lng BETWEEN $${n - 1} AND $${n})`);
+      const near = geo.placesWithin(origin.lat, origin.lng, radius);
+      if (near.length) {
+        const tuples = near.map((place) => {
+          params.push(place.state, place.norm);
+          return `($${params.length - 1}, $${params.length})`;
+        });
+        parts.push(`(c.state, lower(regexp_replace(COALESCE(c.city, ''), '[^a-zA-Z]', '', 'g'))) IN (${tuples.join(', ')})`);
+      }
+      const zips = geo.zipsWithin(origin.lat, origin.lng, radius);
+      if (zips.length) {
+        params.push(zips);
+        parts.push(`left(regexp_replace(COALESCE(c.zip, ''), '\\D', '', 'g'), 5) = ANY($${params.length}::text[])`);
+      }
     }
     const where = parts.length ? parts.join(' OR ') : 'FALSE';
     const sales = parts.length ? await db.query(`${SELECT('sale')} WHERE ${where} ORDER BY c.sale_date DESC NULLS LAST LIMIT 400`, params) : [];
@@ -395,7 +412,7 @@ module.exports = function mountComps(app, getDb, wrap) {
         <div class="muted small">${esc([c.start_date && 'Start ' + fmtDate(c.start_date), c.source].filter(Boolean).join(' · '))}${atts.length ? ' · ' + atts.map((a) => `<a href="/files/${a.id}" target="_blank" rel="noopener">Offering memorandum (PDF)</a>`).join(', ') : ''}</div></li>`;
       }))).join('')}</ul>` : ''}
       ${!sales.length && !leases.length ? '<p class="muted">No comps linked to this property yet.</p>' : ''}
-      ${p.city ? `<p class="small">Full unfiltered list in ${esc(p.city)}, ${esc(p.state || '')} (includes this property and every property type): <a href="/comps/sales${cq}">${city.s} other sale comp${city.s === 1 ? '' : 's'}</a> · <a href="/comps/leases${cq}">${city.l} lease comp${city.l === 1 ? '' : 's'}</a>. The area block above is the call set.</p>` : ''}
+      ${p.city ? `<p class="small">Full unfiltered list in ${esc(p.city)}, ${esc(p.state || '')} (includes this property and every property type): <a href="/comps/sales${cq}">${city.s} other sale comp${city.s === 1 ? '' : 's'}</a> · <a href="/comps/leases${cq}">${city.l} lease comp${city.l === 1 ? '' : 's'}</a>. The area block at the bottom of this page is the call set.</p>` : ''}
       <details${p._openComp ? ' open' : ''}><summary>+ Log comp</summary>${quickCompForm(p, `/properties/${p.id}`)}</details></div>`;
   }
 };

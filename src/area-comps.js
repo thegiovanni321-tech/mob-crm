@@ -1,10 +1,16 @@
 // Call-ready area comps for one CRM property.
-// Closed sales and leases in the same medical / professional office market.
-// Distance is shown only when both the subject and the comp have coordinates.
-// Otherwise the label is "Same city" or "Same state". Proximity is never guessed.
+// Medical and professional office only. Mileage uses property coordinates when both
+// sides have them. Otherwise a U.S. Census place or ZIP center, labeled approximate.
+// Same city is kept when no distance can be measured. The rest of a state is not.
 const C = require('./comps-core');
+const geo = require('./geo/reference');
 
-const RADIUS_MILES = 10;
+function radiusMiles() {
+  const n = Number(process.env.AREA_RADIUS_MILES);
+  if (!Number.isFinite(n) || n <= 0) return 25;
+  return Math.min(100, n);
+}
+const RADIUS_MILES = 25; // default; radiusMiles() applies AREA_RADIUS_MILES
 const SHOW_LIMIT = 6;
 const CREXI_NOI_SF_SOURCE = 'Crexi Inventory Export (medical office) 2026-11-06';
 const OUT_OF_SCOPE = /\b(retail|industrial|warehouse|multifamily|multi-family|apartment|hotel|motel|self[-\s]?storage|restaurant|shopping center|residential|vacant land)\b/i;
@@ -46,32 +52,49 @@ function iso(d) {
 function samePlace(a, b) {
   return C.normCity(a) === C.normCity(b) && String(a || '').length > 0;
 }
-function proximity(subject, comp) {
-  const s = latLng(subject);
-  const c = latLng(comp);
-  if (s && c) {
-    const miles = haversineMiles(s, c);
-    const label = (miles < 0.1 ? '<0.1' : miles.toFixed(1)) + ' mi';
-    return { kind: 'distance', miles, label };
-  }
-  const st = subject.state && comp.state && String(subject.state).toUpperCase() === String(comp.state).toUpperCase();
-  const city = st && subject.city && comp.city && samePlace(subject.city, comp.city);
-  if (city) return { kind: 'city', miles: null, label: 'Same city' };
-  if (st) return { kind: 'state', miles: null, label: 'Same state — fallback, not nearby' };
-  return { kind: 'unknown', miles: null, label: 'Proximity unknown' };
+function mileLabel(miles) {
+  return (miles < 0.1 ? '<0.1' : miles.toFixed(1)) + ' mi';
 }
-function inMarket(subject, comp) {
-  const p = proximity(subject, comp);
-  if (p.kind === 'distance') {
-    const city = subject.state && comp.state && String(subject.state).toUpperCase() === String(comp.state).toUpperCase()
-      && subject.city && comp.city && samePlace(subject.city, comp.city);
-    if (p.miles <= RADIUS_MILES || city) return p;
+function sameState(a, b) {
+  return a.state && b.state && String(a.state).toUpperCase() === String(b.state).toUpperCase();
+}
+function referencePoint(row) {
+  const prop = latLng(row);
+  if (prop) return { ...prop, basis: 'property' };
+  const city = geo.placePoint(row && row.city, row && row.state);
+  if (city) return city;
+  const zip = geo.zipPoint(row && row.zip);
+  if (zip) return zip;
+  return null;
+}
+function approxBasis(subjectPoint, compPoint) {
+  const bits = [subjectPoint, compPoint].map((p) => p.basis);
+  if (bits.includes('zip') && bits.includes('property')) return 'ZIP center to property';
+  if (bits.includes('city') && bits.includes('property')) return 'city center to property';
+  if (bits.includes('zip')) return 'ZIP centers';
+  return 'city centers';
+}
+function marketProximity(subject, comp) {
+  const radius = radiusMiles();
+  const sameCity = sameState(subject, comp) && subject.city && comp.city && samePlace(subject.city, comp.city);
+  const sProp = latLng(subject);
+  const cProp = latLng(comp);
+  const sRef = referencePoint(subject);
+  const cRef = referencePoint(comp);
+  if (sRef && cRef) {
+    const miles = haversineMiles(sRef, cRef);
+    if (miles <= radius || sameCity) {
+      if (sProp && cProp) return { kind: 'distance', miles, label: mileLabel(miles) };
+      if (sameCity && !sProp && !cProp && miles < 1) return { kind: 'city', miles: null, label: 'Same city' };
+      return { kind: 'approx', miles, label: `approx ${mileLabel(miles)} (${approxBasis(sRef, cRef)})` };
+    }
     return null;
   }
-  if (p.kind === 'city') return p;
-  // Same-state-only is the fallback when the subject has no city to match, and no distance can be computed.
-  if (p.kind === 'state' && !subject.city) return p;
+  if (sameCity) return { kind: 'city', miles: null, label: 'Same city' };
   return null;
+}
+function searchOrigin(row) {
+  return referencePoint(row);
 }
 function inOfficeScope(row) {
   const use = String(row.land_use || '').trim();
@@ -178,12 +201,12 @@ function textOrNull(v) {
 
 function buildAreaComps(subject, sales, leases, listings) {
   const subjectRow = subject || {};
-  const hasMarket = Boolean(textOrNull(subjectRow.city) || textOrNull(subjectRow.state) || latLng(subjectRow));
+  const hasMarket = Boolean(textOrNull(subjectRow.city) || latLng(subjectRow) || geo.zipPoint(subjectRow.zip) || geo.placePoint(subjectRow.city, subjectRow.state));
   const base = {
     shown: hasMarket,
     city: textOrNull(subjectRow.city),
     state: textOrNull(subjectRow.state) ? String(subjectRow.state).toUpperCase() : null,
-    radiusMiles: RADIUS_MILES,
+    radiusMiles: radiusMiles(),
     subjectHasCoords: Boolean(latLng(subjectRow)),
     closed: [],
     leases: [],
@@ -191,12 +214,12 @@ function buildAreaComps(subject, sales, leases, listings) {
     hiddenSaleDupes: 0,
     hiddenLeaseDupes: 0,
     noiSuppressed: 0,
-    emptyReason: hasMarket ? null : 'City, state, and coordinates are unknown, so area comps are not shown.',
+    emptyReason: hasMarket ? null : 'City, ZIP, and coordinates are unknown, so nearby comps are not shown. The rest of the state is not treated as nearby.',
   };
   if (!hasMarket) return summarize(base);
 
   const prep = (rows, kind) => (rows || []).filter((row) => row && inOfficeScope(row) && !isSubject(subjectRow, row)).map((row) => {
-    const prox = inMarket(subjectRow, row);
+    const prox = marketProximity(subjectRow, row);
     return prox ? { ...row, _kind: kind, _prox: prox } : null;
   }).filter(Boolean);
 
@@ -296,15 +319,11 @@ function renderAreaComps(model) {
   const unk = '<span class="unknown">Unknown</span>';
   const orUnk = (v) => (v ? esc(v) : unk);
   const dateCell = (d) => (iso(d) ? esc(fmtDate(d)) : unk);
-  const proxCell = (p) => `<span class="prox ${p.kind === 'distance' ? 'prox-mi' : 'prox-fallback'}">${esc(p.label)}</span>`;
+  const proxCell = (p) => `<span class="prox ${p.kind === 'distance' ? 'prox-mi' : p.kind === 'approx' ? 'prox-approx' : 'prox-fallback'}">${esc(p.label)}</span>`;
   const verified = (v) => `<span class="badge ${v ? 's-interested' : 's-attempted'}">${v ? 'Verified' : 'Unverified'}</span>`;
   const sourceLine = (c) => `${verified(Boolean(c.verified))} <span class="muted">${c.source ? esc(c.source) : unk}</span>`;
   const place = [model.city, model.state].filter(Boolean).join(', ') || 'this market';
-  const how = !model.city && model.state
-    ? `City is unknown. These rows are a same-state fallback for ${model.state}, not a nearby or distance match.`
-    : model.subjectHasCoords
-      ? `A mile figure is shown only when both this property and the comp have coordinates. Comps in other cities are included only within ${model.radiusMiles} miles. Same-city comps without coordinates are labeled Same city, not a guessed distance.`
-      : 'This property has no coordinates, so no mileage is shown. Rows are the same city only. The rest of the state is not treated as nearby.';
+  const how = `Within ${model.radiusMiles} miles, closest first. A mile figure with no approx label uses both properties' coordinates. Approx uses a U.S. Census place or ZIP center, not a property pin. Same city is listed when no distance can be measured. Other cities are not added without a measured distance, and the rest of the state is not treated as nearby.`;
 
   if (!model.shown) {
     return `<section id="area-comps" class="area-comps"><h2>Area comps</h2><p class="muted">${esc(model.emptyReason)}</p></section>`;
@@ -386,7 +405,7 @@ function renderAreaComps(model) {
 }
 
 module.exports = {
-  RADIUS_MILES, SHOW_LIMIT, CREXI_NOI_SF_SOURCE,
-  latLng, proximity, inMarket, inOfficeScope, isSubject, leaseRentBasis, salePosture,
+  RADIUS_MILES, radiusMiles, SHOW_LIMIT, CREXI_NOI_SF_SOURCE,
+  latLng, marketProximity, searchOrigin, inOfficeScope, isSubject, leaseRentBasis, salePosture,
   buildAreaComps, renderAreaComps,
 };

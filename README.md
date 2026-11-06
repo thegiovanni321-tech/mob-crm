@@ -72,9 +72,13 @@ Do not put passwords or tokens in source files. Use the host's environment / sec
 
 ## Area comps
 
-Each property record has an **Area comps** block at the bottom of the page, after contacts, call history, linked comps, and property details. It lists nearby closed sales (sold price, date, building SF, sale $/SF, cap) and leases (rent, tenant, term, lease type, source), with links to the comp and to the full city list.
+Each property record has an **Area comps** block at the bottom of the page, after contacts, call history, linked comps, and property details. Previous and Next arrows by the address follow the filtered, sorted list the record was opened from, including across pages. A direct link walks the full list in newest-added order.
 
-Distance is shown in miles only when both the property and the comp have coordinates. Otherwise the row says **Same city** or **Same state**. Missing facts say **Unknown**. Asking prices are labeled asking and are not mixed into closed-sale medians.
+The green New marker is only for a property added in the last 7 days that has not been called. Any logged call outcome removes it. The marker is calculated when the page is read, so imports do not turn it back on and no status or callback field is rewritten for that purpose.
+
+Area comps list nearby closed sales (sold price, date, building SF, sale $/SF, cap) and leases (rent, tenant, term, lease type, source), with links to the comp and to the full city list. The default radius is 25 miles (`AREA_RADIUS_MILES`, up to 100; 50 is the wider setting). Property coordinates are labeled as miles. Records without coordinates use U.S. Census Bureau 2024 place and ZIP-tabulation centers and are labeled approximate. Same city is shown when a distance cannot be measured. A whole state is not treated as nearby.
+
+Missing facts say **Unknown**. Asking prices are labeled asking and are not mixed into closed-sale medians.
 
 Lease rows from the source `Crexi Inventory Export (medical office) 2026-11-06` keep their stored `rent_psf` value, but the screen labels it **NOI/SF** instead of actual rent. Later sources with an explicit rent still show as actual rent.
 

@@ -31,10 +31,14 @@ ${callsLink}<a class="logout" href="/logout">Log out</a></header>
 <nav class="tabs">${nav.map(([h, l, k]) => `<a href="${h}" class="${active === k ? 'on' : ''}">${l}</a>`).join('')}</nav></div>
 ${BANNER.html}<main>${body}</main></body></html>`;
 }
-function propertyRows(rows, { showState = true } = {}) {
+function newBadge(p) {
+  return p && p.is_new ? ' <span class="badge new" title="Added in the last 7 days and not yet called">New</span>' : '';
+}
+function propertyRows(rows, { showState = true, list = null } = {}) {
   if (!rows.length) return '<p class="muted">No properties match.</p>';
-  return `<div class="list">${rows.map((p) => `<a class="row" href="/properties/${p.id}">
-  <div class="r-main"><strong>${esc(p.address)}</strong>${p.is_new ? ' <span class="badge new" title="Added to the CRM in the last 7 days" style="background:#067647;color:#fff;font-size:.7em;padding:.05em .4em;border-radius:.6em;vertical-align:middle">New</span>' : ''}<span class="muted">${esc([p.city, showState ? p.state || p.state_raw : null, p.zip].filter(Boolean).join(', '))}</span></div>
+  const q = list ? qs(list) : '';
+  return `<div class="list">${rows.map((p) => `<a class="row" href="/properties/${p.id}${q}">
+  <div class="r-main"><strong>${esc(p.address)}</strong>${newBadge(p)}<span class="muted">${esc([p.city, showState ? p.state || p.state_raw : null, p.zip].filter(Boolean).join(', '))}</span></div>
   <div class="r-meta"><span>${esc(p.owner_names || p.entities || '—')}</span><span class="muted small">${esc(p.tenant_names || '')}</span></div>
   <div class="r-side">${badge(p.status)}${p.callback_date ? `<span class="small ${p.cb_due ? 'due' : 'muted'}">CB ${fmtDate(p.callback_date)}</span>` : ''}</div></a>`).join('')}</div>`;
 }
@@ -48,4 +52,4 @@ function filterForm(f, tenants, states, action = '/properties') {
 <select name="cb"><option value="">Any callback</option>${opt('due', 'Callback due', f.cb)}${opt('week', 'Due within 7 days', f.cb)}${opt('any', 'Has callback', f.cb)}${opt('none', 'No callback', f.cb)}</select>
 ${f.sort ? `<input type="hidden" name="sort" value="${esc(f.sort)}">` : ''}<button>Filter</button> <a class="btn ghost" href="${action}">Reset</a></form>`;
 }
-module.exports = { BANNER,  esc, layout, propertyRows, filterForm, badge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES };
+module.exports = { BANNER,  esc, layout, propertyRows, filterForm, badge, newBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES };

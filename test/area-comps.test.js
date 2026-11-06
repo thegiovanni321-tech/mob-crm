@@ -12,18 +12,16 @@ function lease(over) {
   return { id: 30, address: '240 Peer Medical', city: 'Sampleville', state: 'FL', tenant: 'Sample Clinic', start_date: '2023-01-01', sf_leased: 4000, rent_psf: 32.5, lease_type: 'NNN', term_months: 84, land_use: 'Professional Office', source: 'Broker rent schedule 2026-12-01', verified: true, ...over };
 }
 
-test('distance is used only when both sides have coordinates', () => {
-  const both = Area.proximity(subject, { lat: 28.0145, lng: -82, city: 'Sampleville', state: 'FL' });
+test('property coordinates are labeled as miles and are not called approximate', () => {
+  const both = Area.marketProximity(subject, { lat: 28.0145, lng: -82, city: 'Sampleville', state: 'FL' });
   assert.equal(both.kind, 'distance');
   assert.match(both.label, /^\d+\.\d mi$/);
-  const oneSided = Area.proximity(subject, { city: 'Sampleville', state: 'FL' });
+  assert.doesNotMatch(both.label, /approx/);
+  const oneSided = Area.marketProximity(subject, { city: 'Sampleville', state: 'FL' });
   assert.equal(oneSided.kind, 'city');
   assert.equal(oneSided.label, 'Same city');
-  assert.equal(oneSided.miles, null);
-  const noSubject = Area.proximity({ city: 'Sampleville', state: 'FL' }, { lat: 28.01, lng: -82, city: 'Sampleville', state: 'FL' });
-  assert.equal(noSubject.label, 'Same city');
-  const stateOnly = Area.proximity({ state: 'FL' }, { state: 'FL', city: 'Otherplace' });
-  assert.equal(stateOnly.label, 'Same state — fallback, not nearby');
+  const stateOnly = Area.marketProximity({ state: 'FL' }, { state: 'FL', city: 'Otherplace' });
+  assert.equal(stateOnly, null);
 });
 
 test('a known city does not pull the rest of the state in as nearby', () => {
@@ -31,12 +29,11 @@ test('a known city does not pull the rest of the state in as nearby', () => {
   const model = Area.buildAreaComps(subject, [sale({}), other], [], []);
   assert.ok(!model.closed.some((c) => c.address === '800 Other City Medical'));
   const fallback = Area.buildAreaComps({ id: 2, address: '9 Bare Plaza', state: 'FL' }, [other], [], []);
-  assert.equal(fallback.closed.length, 1);
-  assert.equal(fallback.closed[0]._prox.label, 'Same state — fallback, not nearby');
+  assert.equal(fallback.shown, false);
+  assert.equal(fallback.closed.length, 0);
   const html = Area.renderAreaComps(fallback);
-  assert.match(html, /same-state fallback/);
-  assert.match(html, /not a nearby or distance match/);
-  assert.doesNotMatch(html, /Nearby/);
+  assert.match(html, /not treated as nearby/);
+  assert.doesNotMatch(html, /800 Other City Medical/);
 });
 
 test('does not invent a market when city, state, and coordinates are missing', () => {

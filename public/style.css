@@ -26,6 +26,7 @@ button.link{background:none;color:var(--acc);padding:0;font-size:inherit}button.
 .r-main,.r-meta{display:flex;flex-direction:column;min-width:0}.r-meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .r-side{display:flex;flex-direction:column;align-items:flex-end;gap:.2rem}
 .badge{font-size:.75rem;padding:.12rem .5rem;border-radius:99px;background:#e8edf2;color:#334;white-space:nowrap}
+.badge.new{align-self:flex-start;background:#067647;color:#fff}
 .s-attempted{background:#fff2cc;color:#7a5b00}.s-talked{background:#dbeafe;color:#1e40af}.s-interested{background:#dcfce7;color:#166534}
 .s-not-interested{background:#f1f1f1;color:#666}.s-do-not-call{background:#fee2e2;color:#991b1b}.s-listing-client{background:#ede9fe;color:#5b21b6}
 .filters{display:flex;flex-wrap:wrap;gap:.5rem;margin:.5rem 0 1rem}.filters input,.filters select{padding:.45rem .6rem;border:1px solid var(--line);border-radius:8px;font-size:15px;background:#fff;max-width:100%}
@@ -83,6 +84,12 @@ a.sortable{color:var(--mut)}a.sortable.on{color:var(--fg);font-weight:700}
 .actual{font-weight:700}
 .tbl.comps.area td,.tbl.comps.area th{font-size:.8rem;padding:.4rem .45rem;vertical-align:top}
 .tbl.comps.area td.addr{white-space:normal;max-width:14rem}
-.prox-mi{font-weight:700}.prox-fallback{font-weight:600}
+.prox-mi{font-weight:700}.prox-approx{font-weight:700;color:#7a5b00}.prox-fallback{font-weight:600}
+.ph-side{display:flex;flex-direction:column;align-items:flex-end;gap:.35rem}
+.prop-nav{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap}
+.prop-arrow{display:inline-flex;align-items:center;gap:.15rem;min-height:2.2rem;padding:.3rem .7rem;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--acc);font-weight:700}
+a.prop-arrow:hover{text-decoration:none;background:#f0f6f8}
+.prop-arrow.is-disabled{opacity:.4;color:var(--mut)}
+@media (max-width:760px){.ph-side{align-items:stretch;width:100%}.prop-nav{justify-content:space-between}}
 .area-ask{margin-top:.2rem}
 @media (max-width:900px){.area-grid{grid-template-columns:1fr}}
