@@ -57,7 +57,7 @@ function proximity(subject, comp) {
   const st = subject.state && comp.state && String(subject.state).toUpperCase() === String(comp.state).toUpperCase();
   const city = st && subject.city && comp.city && samePlace(subject.city, comp.city);
   if (city) return { kind: 'city', miles: null, label: 'Same city' };
-  if (st) return { kind: 'state', miles: null, label: 'Same state' };
+  if (st) return { kind: 'state', miles: null, label: 'Same state — fallback, not nearby' };
   return { kind: 'unknown', miles: null, label: 'Proximity unknown' };
 }
 function inMarket(subject, comp) {
@@ -300,9 +300,11 @@ function renderAreaComps(model) {
   const verified = (v) => `<span class="badge ${v ? 's-interested' : 's-attempted'}">${v ? 'Verified' : 'Unverified'}</span>`;
   const sourceLine = (c) => `${verified(Boolean(c.verified))} <span class="muted">${c.source ? esc(c.source) : unk}</span>`;
   const place = [model.city, model.state].filter(Boolean).join(', ') || 'this market';
-  const how = model.subjectHasCoords
-    ? `Distance is shown only where both this property and the comp have coordinates (within ${model.radiusMiles} miles, or the same city). Comps without coordinates stay labeled by city or state.`
-    : 'This property has no coordinates, so no distance is shown. Matches use the same city and state.';
+  const how = !model.city && model.state
+    ? `City is unknown. These rows are a same-state fallback for ${model.state}, not a nearby or distance match.`
+    : model.subjectHasCoords
+      ? `A mile figure is shown only when both this property and the comp have coordinates. Comps in other cities are included only within ${model.radiusMiles} miles. Same-city comps without coordinates are labeled Same city, not a guessed distance.`
+      : 'This property has no coordinates, so no mileage is shown. Rows are the same city only. The rest of the state is not treated as nearby.';
 
   if (!model.shown) {
     return `<section id="area-comps" class="area-comps"><h2>Area comps</h2><p class="muted">${esc(model.emptyReason)}</p></section>`;

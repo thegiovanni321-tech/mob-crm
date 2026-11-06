@@ -84,7 +84,7 @@ module.exports = function mountComps(app, getDb, wrap) {
       const f = pickF(req.query); const page = Math.max(1, parseInt(req.query.page) || 1); const per = 100;
       const w = where(k, f);
       const [agg] = await db.query(`SELECT count(*)::int n, ${k === 'sale' ? `round(avg(c.cap_rate) FILTER (WHERE c.cap_rate > 0), 4) avg_cap, round(percentile_cont(0.5) WITHIN GROUP (ORDER BY c.price / NULLIF(c.rba,0)) FILTER (WHERE c.rba > 0 AND c.price > 0)::numeric, 0) med_ppsf, round(avg(c.price) FILTER (WHERE c.price > 0), 0) avg_price`
-        : `round(avg(c.rent_psf) FILTER (WHERE c.rent_psf > 0 AND c.source IS DISTINCT FROM '${C.CREXI_NOI_SF_SOURCE.replace(/'/g, "''")}'), 2) avg_rent, round(avg(c.term_months) FILTER (WHERE c.term_months > 0), 0) avg_term, round(sum(c.sf_leased), 0) total_sf`}
+        : `round(avg(c.rent_psf) FILTER (WHERE c.rent_psf > 0 AND btrim(c.source) IS DISTINCT FROM '${C.CREXI_NOI_SF_SOURCE.replace(/'/g, "''")}'), 2) avg_rent, round(avg(c.term_months) FILTER (WHERE c.term_months > 0), 0) avg_term, round(sum(c.sf_leased), 0) total_sf`}
         FROM ${K.table} c LEFT JOIN tenants t ON t.id=c.tenant_id${w.sql}`, w.params);
       const rows = await db.query(`${SELECT(k)}${w.sql}${orderBy(k, f)} LIMIT ${per} OFFSET ${(page - 1) * per}`, w.params);
       const states = await db.query(`SELECT state, count(*)::int n FROM ${K.table} WHERE state IS NOT NULL GROUP BY 1 ORDER BY 1`);

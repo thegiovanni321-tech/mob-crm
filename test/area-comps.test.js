@@ -23,7 +23,20 @@ test('distance is used only when both sides have coordinates', () => {
   const noSubject = Area.proximity({ city: 'Sampleville', state: 'FL' }, { lat: 28.01, lng: -82, city: 'Sampleville', state: 'FL' });
   assert.equal(noSubject.label, 'Same city');
   const stateOnly = Area.proximity({ state: 'FL' }, { state: 'FL', city: 'Otherplace' });
-  assert.equal(stateOnly.label, 'Same state');
+  assert.equal(stateOnly.label, 'Same state — fallback, not nearby');
+});
+
+test('a known city does not pull the rest of the state in as nearby', () => {
+  const other = sale({ id: 12, address: '800 Other City Medical', city: 'Otherplace', state: 'FL' });
+  const model = Area.buildAreaComps(subject, [sale({}), other], [], []);
+  assert.ok(!model.closed.some((c) => c.address === '800 Other City Medical'));
+  const fallback = Area.buildAreaComps({ id: 2, address: '9 Bare Plaza', state: 'FL' }, [other], [], []);
+  assert.equal(fallback.closed.length, 1);
+  assert.equal(fallback.closed[0]._prox.label, 'Same state — fallback, not nearby');
+  const html = Area.renderAreaComps(fallback);
+  assert.match(html, /same-state fallback/);
+  assert.match(html, /not a nearby or distance match/);
+  assert.doesNotMatch(html, /Nearby/);
 });
 
 test('does not invent a market when city, state, and coordinates are missing', () => {

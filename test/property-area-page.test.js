@@ -117,8 +117,13 @@ test('property record shows call-ready area comps', async () => {
     const html = await page.text();
     assert.equal(page.status, 200);
     const start = html.indexOf('id="area-comps"');
-    const end = html.indexOf('<h2>Owner contacts');
+    const end = html.indexOf('</section>', start);
     assert.ok(start > 0 && end > start);
+    for (const marker of ['Owner contacts', 'Log a call', '<h2>Activity</h2>', 'id="comps"', 'Property details', 'Edit property']) {
+      const at = html.indexOf(marker);
+      assert.ok(at > 0 && at < start, marker + ' should stay above area comps');
+    }
+    assert.equal(html.indexOf('id="area-comps"', start + 1), -1);
     const area = html.slice(start, end);
     assert.match(area, /Closed sales/);
     assert.match(area, /Same city/);

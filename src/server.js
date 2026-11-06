@@ -321,7 +321,7 @@ app.get('/properties/:id', wrap(async (req, res) => {
   <div class="ph"><div><h1>${esc(p.address)}</h1><p class="muted">${esc([p.city, p.state || p.state_raw, p.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p></div>
   <div>${badge(p.status)} ${p.callback_date ? `<span class="${p.cb_due ? 'due' : 'muted'}">Callback ${fmtDate(p.callback_date)}</span>` : ''}</div></div>
   <div class="chips">${p.tenants.map((t) => `<a href="/tenants/${t.id}">${esc(t.name)}</a>`).join('')}</div>
-  ${compSaved}${await comps.areaCompsPanel(p)}<p class="actions"><a class="btn small" href="/properties/${p.id}?logcomp=1#comps">+ Log comp</a> <a class="btn ghost small" href="#comps">Comps</a></p>
+  ${compSaved}<p class="actions"><a class="btn small" href="/properties/${p.id}?logcomp=1#comps">+ Log comp</a> <a class="btn ghost small" href="#comps">Comps</a></p>
   <div class="cols"><section>
    <h2>Owner contacts</h2>${p.owners.map((o) => ownerCard(o, p.id)).join('') || '<p class="muted">No owner linked.</p>'}
    <details class="box"><summary>+ Add / link owner</summary>
@@ -351,7 +351,8 @@ app.get('/properties/:id', wrap(async (req, res) => {
   <h2>Property details</h2><dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('') || '<p class="muted">No details.</p>'}</dl>
   ${p.notes ? `<h2>Notes</h2><div class="pre box">${esc(p.notes)}</div>` : ''}
   <p class="muted small">Source: ${esc(p.source || '')}</p>
-  <p><a class="btn ghost" href="/properties/${p.id}/edit">Edit property</a></p>`, { active: 'properties' }));
+  <p><a class="btn ghost" href="/properties/${p.id}/edit">Edit property</a></p>
+  ${await comps.areaCompsPanel(p)}`, { active: 'properties' }));
 }));
 app.get('/properties/:id/edit', wrap(async (req, res) => {
   const p = await loadProperty(parseInt(req.params.id) || 0); if (!p) return res.status(404).send('Not found');
@@ -523,6 +524,10 @@ migrate().then(async (d) => {
   db = d; await d.exec(require('./general-sync').SCHEMA);
   app.listen(PORT, () => console.log(`MOB CRM on http://localhost:${PORT} (db: ${d.kind})`));
   const log = (m) => console.log(new Date().toISOString(), m);
+  d.query(`SELECT (SELECT count(*)::int FROM properties) properties, (SELECT count(*)::int FROM sale_comps) sales,
+    (SELECT count(*)::int FROM lease_comps) leases, (SELECT count(*)::int FROM buyers) buyers`)
+    .then(([c]) => log('[baseline] ' + JSON.stringify(c)))
+    .catch((e) => log('[baseline] count failed: ' + e.message));
   if (!REMOTE) require('./buyers').syncBuyers(d).then((r) => log('[buyers] ' + JSON.stringify(r))).catch((e) => log('[buyers] sync failed: ' + e.message));
   if (REMOTE) require('./remote-sync').startRemoteWorker(REMOTE, { log }); // push deltas/workbook to the hosted app instead of importing locally
   else if (process.env.DELTA_WATCH !== '0') require('./general-sync').startWatcher(() => db, { log });

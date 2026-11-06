@@ -72,7 +72,7 @@ Do not put passwords or tokens in source files. Use the host's environment / sec
 
 ## Area comps
 
-Each property record has an **Area comps** block for call prep. It lists nearby closed sales (sold price, date, building SF, sale $/SF, cap) and leases (rent, tenant, term, lease type, source), with links to the comp and to the full city list.
+Each property record has an **Area comps** block at the bottom of the page, after contacts, call history, linked comps, and property details. It lists nearby closed sales (sold price, date, building SF, sale $/SF, cap) and leases (rent, tenant, term, lease type, source), with links to the comp and to the full city list.
 
 Distance is shown in miles only when both the property and the comp have coordinates. Otherwise the row says **Same city** or **Same state**. Missing facts say **Unknown**. Asking prices are labeled asking and are not mixed into closed-sale medians.
 
