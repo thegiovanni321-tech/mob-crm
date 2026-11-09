@@ -376,14 +376,15 @@ app.get('/properties/:id', wrap(async (req, res) => {
   <h2>Property details</h2><dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('') || '<p class="muted">No details.</p>'}</dl>
   ${p.notes ? `<h2>Notes</h2><div class="pre box">${esc(p.notes)}</div>` : ''}
   <p class="muted small">Source: ${esc(p.source || '')}</p>
-  <p><a class="btn ghost" href="/properties/${p.id}/edit">Edit property</a></p>
+  <p><a class="btn ghost" href="/properties/${p.id}/edit${qs(list)}">Edit property</a></p>
   ${await comps.areaCompsPanel(p)}`, { active: 'properties' }));
 }));
 app.get('/properties/:id/edit', wrap(async (req, res) => {
   const p = await loadProperty(parseInt(req.params.id) || 0); if (!p) return res.status(404).send('Not found');
-  res.send(layout('Edit ' + p.address, `<p class="crumbs"><a href="/properties/${p.id}">${esc(p.address)}</a> ›</p><h1>Edit property</h1>
+  const list = Nav.listFromQuery(req.query);
+  res.send(layout('Edit ' + p.address, `<p class="crumbs"><a href="/properties/${p.id}${qs(list)}">${esc(p.address)}</a> ›</p><h1>Edit property</h1>
   ${propertyForm(p, await tenantList(), `/properties/${p.id}`, p.tenants.map((t) => t.id), false)}
-  <form method="post" action="/properties/${p.id}/delete" onsubmit="return confirm('Delete this property and its activity log? This cannot be undone.')"><button class="danger">Delete property</button></form>`, { active: 'properties' }));
+  <form method="post" action="/properties/${p.id}/delete" onsubmit="return confirm('Delete this property and its activity log? This cannot be undone.')">${listFields(list)}<button class="danger">Delete property</button></form>`, { active: 'properties' }));
 }));
 app.post('/properties/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id);
@@ -401,7 +402,14 @@ function saveCoords(t, id, b) {
   const lng = b.lng === '' || b.lng === undefined ? null : nnum(b.lng);
   return t.query('UPDATE properties SET lat=$2, lng=$3 WHERE id=$1', [id, lat, lng]);
 }
-app.post('/properties/:id/delete', wrap(async (req, res) => { await db.query('DELETE FROM properties WHERE id=$1', [parseInt(req.params.id)]); res.redirect('/properties'); }));
+app.post('/properties/:id/delete', wrap(async (req, res) => {
+  const id = parseInt(req.params.id);
+  const list = Nav.listFromQuery(req.body);
+  const walk = await neighborNav(id, list);
+  const target = Nav.recordAfterDelete(walk);
+  await db.query('DELETE FROM properties WHERE id=$1', [id]);
+  res.redirect(target ? `/properties/${target.id}${qs(list)}` : '/properties' + qs(list));
+}));
 const STATUS_FROM_OUTCOME = { Talked: 'Talked', Interested: 'Interested', 'Not interested': 'Not interested', 'Do not call': 'Do not call' };
 app.post('/properties/:id/activities', wrap(async (req, res) => {
   const id = parseInt(req.params.id); const b = req.body;

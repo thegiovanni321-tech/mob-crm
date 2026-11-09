@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { recordAfterDelete } = require('../src/property-nav');
 const PORT = 3462;
 const BASE = `http://127.0.0.1:${PORT}`;
 const PASSWORD = 'synthetic-test-password';
@@ -32,6 +33,18 @@ async function post(cookie, url, fields) {
   const res = await fetch(BASE + url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', origin: BASE, cookie }, body: new URLSearchParams(fields), redirect: 'manual' });
   return res.headers.get('location') || '';
 }
+
+test('delete continues to the next list record, or the previous one when this was last', () => {
+  const alpha = { id: 2, address: 'Alpha Medical' };
+  const bravo = { id: 3, address: 'Bravo Medical' };
+  const charlie = { id: 1, address: 'Charlie Medical' };
+  const middle = { index: 1, total: 3, prev: alpha, next: charlie, inList: true };
+  assert.equal(recordAfterDelete(middle).id, 1);
+  const last = { index: 2, total: 3, prev: bravo, next: null, inList: true };
+  assert.equal(recordAfterDelete(last).id, 3);
+  const only = { index: 0, total: 1, prev: null, next: null, inList: true };
+  assert.equal(recordAfterDelete(only), null);
+});
 
 test('previous and next follow the filtered address sort, not id order, and survive a call that leaves the filter', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-nav-'));

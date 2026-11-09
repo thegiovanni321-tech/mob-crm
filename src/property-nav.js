@@ -35,5 +35,11 @@ function neighborsOf(rows, id) {
     inList: true,
   };
 }
+// After deleting the current row: the next record in this list, or the previous one
+// when this was the last row. Null means the list has no remaining records.
+function recordAfterDelete(walk) {
+  if (!walk) return null;
+  return walk.next || walk.prev || null;
+}
 
-module.exports = { LIST_KEYS, SORT_SQL, sortSql, listFromQuery, neighborsOf };
+module.exports = { LIST_KEYS, SORT_SQL, sortSql, listFromQuery, neighborsOf, recordAfterDelete };
