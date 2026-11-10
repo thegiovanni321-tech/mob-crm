@@ -16,9 +16,11 @@ const qs = (obj) => { const u = new URLSearchParams(); for (const [k, v] of Obje
 const BANNER = { html: '' }; // set by server.js when this copy is not the live one
 function layout(title, body, opts = {}) {
   const { active = '', q = '', callsToday } = opts;
-  const nav = [['/', 'Home', 'home'], ['/states', 'States', 'states'], ['/tenants', 'Tenants', 'tenants'], ['/properties', 'Properties', 'properties'], ['/owners', 'Owners', 'owners'], ['/callbacks', 'Callbacks', 'callbacks'], ['/comps', 'Comps', 'comps'], ['/buyers', 'Buyers', 'buyers'], ['/listings', 'Listings', 'listings']];
   const calls = require('./calls');
   const todayN = typeof callsToday === 'number' ? callsToday : calls.get().callsToday;
+  const leadsN = calls.get().leadsCount;
+  const leadsLabel = typeof leadsN === 'number' ? `Leads (${leadsN})` : 'Leads';
+  const nav = [['/', 'Home', 'home'], ['/states', 'States', 'states'], ['/tenants', 'Tenants', 'tenants'], ['/properties', 'Properties', 'properties'], ['/owners', 'Owners', 'owners'], ['/callbacks', 'Callbacks', 'callbacks'], ['/leads', leadsLabel, 'leads'], ['/comps', 'Comps', 'comps'], ['/buyers', 'Buyers', 'buyers'], ['/listings', 'Listings', 'listings']];
   const callsLink = typeof todayN === 'number'
     ? `<a class="calls-today" href="/calls" title="Logged calls today, Eastern Time">${esc(calls.label(todayN))}</a>`
     : '';
@@ -34,12 +36,17 @@ ${BANNER.html}<main>${body}</main></body></html>`;
 function newBadge(p) {
   return p && p.is_new ? ' <span class="badge new" title="Added in the last 7 days and not yet called">New</span>' : '';
 }
+function leadBadge(p) {
+  if (!p || p.lead_at == null || String(p.lead_at).trim() === '') return '';
+  return ' <span class="badge lead" title="Owner confirmed initial interest in selling">Lead</span>';
+}
 function propertyRows(rows, { showState = true, list = null } = {}) {
   if (!rows.length) return '<p class="muted">No properties match.</p>';
   return `<div class="list">${rows.map((p, i) => {
-    const q = list ? qs(list.from ? { ...list, cb_at: i } : list) : '';
+    const extra = list && list.from === 'leads' ? { ld_at: i } : (list && list.from ? { cb_at: i } : null);
+    const q = list ? qs(extra ? { ...list, ...extra } : list) : '';
     return `<a class="row" id="p-${p.id}" href="/properties/${p.id}${q}">
-  <div class="r-main"><strong>${esc(p.address)}</strong>${newBadge(p)}<span class="muted">${esc([p.city, showState ? p.state || p.state_raw : null, p.zip].filter(Boolean).join(', '))}</span></div>
+  <div class="r-main"><strong>${esc(p.address)}</strong>${newBadge(p)}${leadBadge(p)}<span class="muted">${esc([p.city, showState ? p.state || p.state_raw : null, p.zip].filter(Boolean).join(', '))}</span></div>
   <div class="r-meta"><span>${esc(p.owner_names || p.entities || '—')}</span><span class="muted small">${esc(p.tenant_names || '')}</span></div>
   <div class="r-side">${badge(p.status)}${p.callback_date ? `<span class="small ${p.cb_due ? 'due' : 'muted'}">CB ${fmtDate(p.callback_date)}</span>` : ''}</div></a>`;
   }).join('')}</div>`;
@@ -54,4 +61,4 @@ function filterForm(f, tenants, states, action = '/properties') {
 <select name="cb"><option value="">Any callback</option>${opt('due', 'Callback due', f.cb)}${opt('week', 'Due within 7 days', f.cb)}${opt('any', 'Has callback', f.cb)}${opt('none', 'No callback', f.cb)}</select>
 ${f.sort ? `<input type="hidden" name="sort" value="${esc(f.sort)}">` : ''}<button>Filter</button> <a class="btn ghost" href="${action}">Reset</a></form>`;
 }
-module.exports = { BANNER,  esc, layout, propertyRows, filterForm, badge, newBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES };
+module.exports = { BANNER,  esc, layout, propertyRows, filterForm, badge, newBadge, leadBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES };

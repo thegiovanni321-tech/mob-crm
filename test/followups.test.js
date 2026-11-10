@@ -226,6 +226,9 @@ test('scores put sell interest above a due callback, then 75+ above 65+, then a 
   const notInterested = buildFollowUps({ today: TODAY, properties: [prop()], activities: [talk({ outcome: 'Not interested', notes: '' })] });
   assert.equal(notInterested.ranked.length, 0);
   assert.equal(notInterested.excluded.length, 1);
+  const led = buildFollowUps({ today: TODAY, properties: [prop({ lead_at: '2026-11-10T12:00:00Z', notes: '' })], activities: [talk({ notes: 'She is interested in selling.' })] });
+  assert.equal(led.ranked.length, 0);
+  assert.equal(led.excluded.length, 0);
 });
 
 test('health matches owner illness, not a tenant or company name', () => {

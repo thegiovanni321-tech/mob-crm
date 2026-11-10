@@ -345,6 +345,7 @@ function buildFollowUps({ today, properties, activities, state }) {
   for (const p of byId.values()) {
     if (want && String(p.state || '').toUpperCase() !== want) continue;
     if (DEAD_STATUS.has(p.status)) continue;
+    if (p.lead_at != null && String(p.lead_at).trim() !== '') continue;
     const calls = p.activities.filter((a) => a.kind === 'call' && iso(a.activity_date));
     calls.sort((a, b) => (iso(a.activity_date) < iso(b.activity_date) ? 1 : iso(a.activity_date) > iso(b.activity_date) ? -1 : b.id - a.id));
     if (calls[0] && DEAD_OUTCOME.has(calls[0].outcome)) continue;

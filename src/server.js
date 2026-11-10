@@ -2,7 +2,7 @@ const express = require('express'); const path = require('path');
 const { migrate } = require('./db');
 const auth = require('./auth');
 const V = require('./views');
-const { esc, layout, propertyRows, filterForm, badge, newBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES } = V;
+const { esc, layout, propertyRows, filterForm, badge, newBadge, leadBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES } = V;
 const { IS_NEW_SQL } = require('./property-flags');
 const Nav = require('./property-nav');
 const Follow = require('./followups');
@@ -41,9 +41,11 @@ const Calls = require('./calls');
 // One DB hit per request: today's call count for the header (AsyncLocalStorage so layout() can read it).
 app.use(async (req, res, next) => {
   let n = 0;
+  let leads = 0;
   try { n = await Calls.todayCount(db); } catch (e) { console.error('[calls] today count', e.message); }
+  try { const [r] = await db.query('SELECT count(*)::int n FROM properties WHERE lead_at IS NOT NULL'); leads = r ? r.n : 0; } catch (e) { console.error('[leads] count', e.message); }
   res.locals.callsToday = n;
-  Calls.run({ callsToday: n }, () => next());
+  Calls.run({ callsToday: n, leadsCount: leads }, () => next());
 });
 const Att = require('./attachments');
 app.get('/files/:id', wrap(async (req, res) => {
@@ -229,7 +231,7 @@ function ownerRows(owners) {
 }
 async function followModel(fuState) {
   const t = today();
-  const fuProps = await db.query('SELECT id, address, city, state, status, last_contacted, callback_date, notes, sale_date, tenancy FROM properties');
+  const fuProps = await db.query('SELECT id, address, city, state, status, last_contacted, callback_date, notes, sale_date, tenancy, lead_at FROM properties');
   const fuActs = await db.query('SELECT id, property_id, owner_id, kind, outcome, notes, activity_date FROM activities');
   const fuOwners = await db.query('SELECT po.property_id, o.id, o.name, o.entity, o.age, o.notes, o.mailing_address, o.birth_year, o.age_source, o.age_confidence FROM property_owners po JOIN owners o ON o.id = po.owner_id ORDER BY o.id');
   const fuLeases = await db.query('SELECT property_id, expiration_date, start_date, term_months FROM lease_comps WHERE property_id IS NOT NULL');
@@ -279,6 +281,78 @@ app.get('/callbacks', wrap(async (req, res) => {
   ${Follow.renderFollowUps(follow, { state: fuState, states })}`, { active: 'callbacks' }));
 }));
 
+function fmtStamp(d) {
+  if (!d) return '';
+  const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return fmtDate(d);
+  return new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(dt);
+}
+app.get('/leads', wrap(async (req, res) => {
+  const state = (nz(req.query.state) || '').toUpperCase();
+  const q = nz(req.query.q) || '';
+  const where = ['p.lead_at IS NOT NULL'];
+  const params = [];
+  if (state) {
+    if (state === 'UNKNOWN') where.push('p.state IS NULL');
+    else { params.push(state); where.push(`p.state = $${params.length}`); }
+  }
+  if (q) {
+    params.push('%' + q + '%');
+    const i = params.length;
+    where.push(`(p.address ILIKE $${i} OR p.city ILIKE $${i} OR COALESCE(p.lead_note, '') ILIKE $${i} OR EXISTS (SELECT 1 FROM property_owners po JOIN owners o ON o.id = po.owner_id WHERE po.property_id = p.id AND (o.name ILIKE $${i} OR o.entity ILIKE $${i} OR COALESCE(o.phone1, '') ILIKE $${i})))`);
+  }
+  const rows = await db.query(`SELECT p.id, p.address, p.city, p.state, p.lead_at, p.lead_note, p.last_contacted, p.callback_date, p.notes, p.status, p.tenancy, p.sale_date,
+    (SELECT string_agg(DISTINCT o.name, ', ') FROM property_owners po JOIN owners o ON o.id = po.owner_id WHERE po.property_id = p.id) AS owner_names,
+    (SELECT string_agg(DISTINCT NULLIF(o.phone1, ''), ', ') FROM property_owners po JOIN owners o ON o.id = po.owner_id WHERE po.property_id = p.id) AS phones,
+    (SELECT string_agg(t.name, ', ' ORDER BY t.name) FROM property_tenants pt JOIN tenants t ON t.id = pt.tenant_id WHERE pt.property_id = p.id) AS tenant_names
+    FROM properties p WHERE ${where.join(' AND ')} ORDER BY p.lead_at DESC NULLS LAST, p.id DESC`, params);
+  const ids = rows.map((r) => r.id);
+  const acts = ids.length ? await db.query('SELECT id, property_id, kind, outcome, notes, activity_date FROM activities WHERE property_id = ANY($1::int[])', [ids]) : [];
+  const owners = ids.length ? await db.query('SELECT po.property_id, o.id, o.name, o.entity, o.age, o.notes, o.mailing_address, o.birth_year, o.age_source, o.age_confidence, o.phone1 FROM property_owners po JOIN owners o ON o.id = po.owner_id WHERE po.property_id = ANY($1::int[])', [ids]) : [];
+  const ownersOf = new Map();
+  for (const o of owners) {
+    if (!ownersOf.has(o.property_id)) ownersOf.set(o.property_id, []);
+    ownersOf.get(o.property_id).push(o);
+  }
+  const clones = rows.map((r) => ({ ...r, lead_at: null, owners: ownersOf.get(r.id) || [] }));
+  const scored = Follow.buildFollowUps({ today: today(), properties: clones, activities: acts });
+  const tagOf = new Map(scored.ranked.map((r) => [r.propertyId, r.tags]));
+  const latestCall = new Map();
+  for (const a of acts) {
+    if (a.kind !== 'call') continue;
+    const prev = latestCall.get(a.property_id);
+    const day = a.activity_date ? String(a.activity_date).slice(0, 10) : '';
+    const prevDay = prev && prev.activity_date ? String(prev.activity_date).slice(0, 10) : '';
+    if (!prev || day > prevDay || (day === prevDay && a.id > prev.id)) latestCall.set(a.property_id, a);
+  }
+  const states = [...new Set((await db.query('SELECT DISTINCT state FROM properties WHERE lead_at IS NOT NULL AND state IS NOT NULL')).map((r) => r.state))].sort();
+  const list = { from: 'leads' };
+  if (state && state !== 'UNKNOWN') list.state = state;
+  if (q) list.q = q;
+  const body = rows.map((r, i) => {
+    const call = latestCall.get(r.id);
+    const tags = (tagOf.get(r.id) || []).map((t) => `<span class="badge">${esc(t.label)}</span>`).join(' ');
+    const href = `/properties/${r.id}${qs({ ...list, ld_at: i })}`;
+    return `<tr id="p-${r.id}">
+      <td><a href="${href}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
+      <td>${esc(r.owner_names || 'No owner')}${r.phones ? `<div class="small"><a href="${telHref(String(r.phones).split(',')[0].trim())}">${esc(r.phones)}</a></div>` : ''}</td>
+      <td class="small">${esc(r.tenant_names || r.tenancy || '')}</td>
+      <td>${esc(fmtStamp(r.lead_at))}</td>
+      <td class="small">${esc(r.lead_note || '')}</td>
+      <td>${esc(fmtDate(r.last_contacted))}${call && call.notes ? `<div class="small muted">${esc(String(call.notes).replace(/\\s+/g, ' ').trim().slice(0, 140))}</div>` : ''}</td>
+      <td>${r.callback_date ? esc(fmtDate(r.callback_date)) : ''}</td>
+      <td class="small">${tags}</td>
+    </tr>`;
+  }).join('');
+  res.send(layout('Leads', `<h1>Leads <span class="muted">(${rows.length})</span></h1>
+  <p class="muted">Locations where the owner confirmed initial interest in selling. Marking a lead does not change notes, callbacks, or call history.</p>
+  <form class="filters" method="get" action="/leads">
+    <input type="search" name="q" value="${esc(q)}" placeholder="Address, owner, phone, note">
+    <select name="state"><option value="">All states</option>${states.map((s) => `<option${s === state ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select>
+    <button>Filter</button> <a class="btn ghost" href="/leads">Reset</a></form>
+  ${rows.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Property</th><th>Owner</th><th>Tenant</th><th>Marked</th><th>Lead note</th><th>Last talked</th><th>Callback</th><th>Signals</th></tr></thead><tbody>${body}</tbody></table></div>` : '<p class="muted">No leads yet. Mark a property from its record.</p>'}`, { active: 'leads', q }));
+}));
+
 // ---------- property detail / edit ----------
 async function loadProperty(id) {
   const [p] = await db.query(`${PROP_SELECT} WHERE p.id=$2`, [today(), id]); if (!p) return null;
@@ -306,7 +380,7 @@ function ownerCard(o, pid) {
   ${pid ? `<div class="o-actions small"><a href="/owners/${o.id}/edit?back=/properties/${pid}">Edit</a> · <form method="post" action="/properties/${pid}/owners/${o.id}/unlink" class="inline" onsubmit="return confirm('Unlink this owner from the property?')">${o._listFields || ''}<button class="link">Unlink</button></form></div>` : ''}</div>`;
 }
 function activityList(acts, withProp = false) {
-  return `<ul class="acts">${acts.map((a) => `<li class="k-${esc(a.kind)}"><div><b>${esc(a.outcome || (a.kind === 'note' ? 'Note' : a.kind))}</b>
+  return `<ul class="acts">${acts.map((a) => `<li class="k-${esc(a.kind)}"><div><b>${esc(a.outcome || (a.kind === 'note' ? 'Note' : a.kind === 'lead' ? 'Marked as lead' : a.kind))}</b>
   <span class="muted small">${a.activity_date ? fmtDate(a.activity_date) : a.kind === 'import' ? 'date not recorded' : ''}${a.owner_name ? ' · ' + esc(a.owner_name) : ''}${a.callback_date ? ' · callback ' + fmtDate(a.callback_date) : ''}</span></div>
   ${withProp ? `<div class="small"><a href="/properties/${a.property_id}">${esc(a.address)}, ${esc(a.city || '')} ${esc(a.state || '')}</a></div>` : ''}
   ${a.notes ? `<div class="pre small">${esc(a.notes)}</div>` : ''}</li>`).join('')}</ul>`;
@@ -381,7 +455,7 @@ function dedupeIds(rows) {
   }
   return out;
 }
-async function callbackSection(ret) {
+async function callbackSection(ret, extra = {}) {
   if (ret.from === 'cbdue') {
     const { rows } = await listProps({ cb: 'due', sort: 'cbdesc' }, 2000);
     return rows.map((r) => ({ id: r.id, address: r.address }));
@@ -396,6 +470,20 @@ async function callbackSection(ret) {
     if (ret.lst) { params.push(ret.lst); where += ' AND l.status=$1'; }
     const rows = await db.query(`SELECT l.property_id AS id, COALESCE(p.address, l.address) AS address FROM listings l LEFT JOIN properties p ON p.id=l.property_id ${where} ORDER BY CASE l.status WHEN 'Active' THEN 0 WHEN 'Under contract' THEN 1 WHEN 'Sold' THEN 2 ELSE 3 END, l.updated_at DESC, l.id DESC`, params);
     return dedupeIds(rows);
+  }
+  if (ret.from === 'leads') {
+    const where = ['p.lead_at IS NOT NULL'];
+    const params = [];
+    if (extra.state) {
+      if (extra.state === 'Unknown') where.push('p.state IS NULL');
+      else { params.push(extra.state); where.push(`p.state = $${params.length}`); }
+    }
+    if (extra.q) {
+      params.push('%' + extra.q + '%');
+      const i = params.length;
+      where.push(`(p.address ILIKE $${i} OR p.city ILIKE $${i} OR COALESCE(p.lead_note, '') ILIKE $${i} OR EXISTS (SELECT 1 FROM property_owners po JOIN owners o ON o.id = po.owner_id WHERE po.property_id = p.id AND (o.name ILIKE $${i} OR o.entity ILIKE $${i} OR COALESCE(o.phone1, '') ILIKE $${i})))`);
+    }
+    return db.query(`SELECT p.id, p.address FROM properties p WHERE ${where.join(' AND ')} ORDER BY p.lead_at DESC NULLS LAST, p.id DESC`, params);
   }
   if (ret.from === 'buyer' && ret.bid) {
     const Buyers = require('./buyers');
@@ -427,7 +515,7 @@ app.get('/properties/:id', wrap(async (req, res) => {
   const ordered = ret && Return.ORDERED.has(ret.from);
   let walk;
   if (ordered) {
-    const rows = await callbackSection(ret);
+    const rows = await callbackSection(ret, list);
     walk = Return.neighborsInCallbackList(rows, p.id, ret.cb_at);
   } else walk = await neighborNav(p.id, list);
   const keptAt = ordered ? (walk.fellOut ? ret.cb_at : walk.index) : null;
@@ -443,9 +531,10 @@ app.get('/properties/:id', wrap(async (req, res) => {
   const back = backInfo ? `<a class="back-callbacks" href="${backInfo.href}">${esc(backInfo.label)}</a>` : '';
   res.send(layout(p.address, `<p class="crumbs">${back ? back + ' · ' : ''}<a href="/states/${esc(p.state || 'Unknown')}">${esc(p.state || p.state_raw || 'Unknown state')}</a> ›</p>
   <div class="ph"><div><h1>${esc(p.address)}${newBadge(p)}</h1><p class="muted">${esc([p.city, p.state || p.state_raw, p.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p></div>
-  <div class="ph-side"><div>${badge(p.status)} ${p.callback_date ? `<span class="${p.cb_due ? 'due' : 'muted'}">Callback ${fmtDate(p.callback_date)}</span>` : ''}</div>
+  <div class="ph-side"><div>${badge(p.status)} ${leadBadge(p)} ${p.lead_at ? `<span class="muted small">${esc(fmtStamp(p.lead_at))}</span>` : ''} ${p.callback_date ? `<span class="${p.cb_due ? 'due' : 'muted'}">Callback ${fmtDate(p.callback_date)}</span>` : ''}</div>
   <nav class="prop-nav" aria-label="Properties in this calling list">${propArrow('prev', walk.prev, prevQuery)}<span class="muted small">${walk.total ? `${Math.min(walk.index, walk.total - 1) + 1} of ${walk.total}` : ''}</span>${propArrow('next', walk.next, nextQuery)}</nav>
-  ${walk.fellOut ? `<p class="muted small">${ordered ? 'This record is no longer in that list. Previous and next use the neighboring rows.' : 'This record no longer matches the list filter. Previous and next stay in that list order.'}</p>` : ''}</div></div>
+  ${walk.fellOut ? `<p class="muted small">${ordered ? 'This record is no longer in that list. Previous and next use the neighboring rows.' : 'This record no longer matches the list filter. Previous and next stay in that list order.'}</p>` : ''}
+  ${p.lead_at ? `<p class="small">${p.lead_note ? esc(p.lead_note) : ''}</p><form method="post" action="/properties/${p.id}/unlead">${hidden}<button class="btn ghost small">Remove from leads</button></form>` : `<form method="post" action="/properties/${p.id}/lead" class="form">${hidden}<label>Lead note (optional)<input name="lead_note" maxlength="280" placeholder="Confirmed initial interest"></label><button class="btn small">Mark as lead</button></form>`}</div></div>
   <div class="chips">${p.tenants.map((t) => `<a href="/tenants/${t.id}">${esc(t.name)}</a>`).join('')}</div>
   ${compSaved}<p class="actions"><a class="btn small" href="/properties/${p.id}${qs(pageQuery)}${qs(pageQuery) ? '&' : '?'}logcomp=1#comps">+ Log comp</a> <a class="btn ghost small" href="#comps">Comps</a></p>
   <div class="cols"><section>
@@ -512,7 +601,7 @@ app.post('/properties/:id/delete', wrap(async (req, res) => {
   const list = Nav.listFromQuery(req.body);
   const ret = Return.returnFromQuery(req.body);
   if (ret) {
-    const rows = await callbackSection(ret);
+    const rows = await callbackSection(ret, list);
     const walk = Return.neighborsInCallbackList(rows, id, ret.cb_at);
     const target = Nav.recordAfterDelete(walk);
     await db.query('DELETE FROM properties WHERE id=$1', [id]);
@@ -524,6 +613,22 @@ app.post('/properties/:id/delete', wrap(async (req, res) => {
   const target = Nav.recordAfterDelete(walk);
   await db.query('DELETE FROM properties WHERE id=$1', [id]);
   res.redirect(target ? `/properties/${target.id}${qs(list)}` : '/properties' + qs(list));
+}));
+app.post('/properties/:id/lead', wrap(async (req, res) => {
+  const id = parseInt(req.params.id);
+  const note = nz(req.body.lead_note);
+  const short = note ? note.slice(0, 280) : null;
+  const [existing] = await db.query('SELECT id, lead_at FROM properties WHERE id=$1', [id]);
+  if (existing && !existing.lead_at) {
+    await db.query('UPDATE properties SET lead_at=now(), lead_note=$2, updated_at=now() WHERE id=$1', [id, short]);
+    await db.query(`INSERT INTO activities (property_id, kind, notes, activity_date) VALUES ($1, 'lead', $2, $3)`, [id, short || 'Marked as lead', today()]);
+  }
+  res.redirect('/properties/' + id + qs(contextQuery(req.body)));
+}));
+app.post('/properties/:id/unlead', wrap(async (req, res) => {
+  const id = parseInt(req.params.id);
+  await db.query('UPDATE properties SET lead_at=NULL, lead_note=NULL, updated_at=now() WHERE id=$1', [id]);
+  res.redirect('/properties/' + id + qs(contextQuery(req.body)));
 }));
 const STATUS_FROM_OUTCOME = { Talked: 'Talked', Interested: 'Interested', 'Not interested': 'Not interested', 'Do not call': 'Do not call' };
 app.post('/properties/:id/activities', wrap(async (req, res) => {
