@@ -70,6 +70,59 @@ function matchOwner(row, properties, owners, links) {
   return { owner: candidates[0] };
 }
 
+function explicitBirthYear(row) {
+  const raw = pick(row, ['birth_year']);
+  if (String(raw).trim() === '') return null;
+  const year = Number(String(raw).trim());
+  if (Number.isInteger(year) && year >= 1900 && year <= 2100) return year;
+  return { invalid: true };
+}
+function researchConfidence(row) {
+  const conf = confidence(pick(row, ['match_confidence', 'confidence', 'age_confidence']));
+  return conf === 'high' || conf === 'medium' ? conf : null;
+}
+function classifyResearchRows(rows, { owners, links }) {
+  const byOwner = new Map((owners || []).map((o) => [Number(o.id), { ...o }]));
+  const updates = [];
+  const skipped = [];
+  (rows || []).forEach((row, index) => {
+    const line = index + 2;
+    const conf = researchConfidence(row);
+    if (!conf) { skipped.push({ line, reason: 'match confidence is not high or medium' }); return; }
+    const year = explicitBirthYear(row);
+    if (!year) { skipped.push({ line, reason: 'birth year is blank' }); return; }
+    if (year.invalid) { skipped.push({ line, reason: 'birth year is not a four-digit year' }); return; }
+    const ownerId = Number(pick(row, ['crm_owner_id', 'owner_id']));
+    const propertyId = Number(pick(row, ['crm_property_id', 'property_id']));
+    if (!ownerId || !propertyId) { skipped.push({ line, reason: 'crm_owner_id and crm_property_id are required' }); return; }
+    const owner = byOwner.get(ownerId);
+    if (!owner) { skipped.push({ line, reason: 'owner id is not in the CRM' }); return; }
+    const linked = (links || []).some((l) => Number(l.property_id) === propertyId && Number(l.owner_id) === ownerId);
+    if (!linked) { skipped.push({ line, reason: 'owner is not linked to that property' }); return; }
+    const person = pick(row, ['person_name', 'name']);
+    const warning = person && !sameName(person, owner.name) && !sameName(person, owner.entity)
+      ? `Name “${person}” does not match ${owner.name || owner.entity || 'the owner on file'}`
+      : '';
+    if (owner.birth_year) { skipped.push({ line, reason: 'birth year already set', warning }); return; }
+    const source = String(pick(row, ['source', 'age_source']) || '').trim().slice(0, 200) || 'Nexis';
+    owner.birth_year = year;
+    updates.push({ line, ownerId, propertyId, name: owner.name || '', birthYear: year, source, confidence: conf, warning });
+  });
+  return { updates, skipped };
+}
+async function applyResearchAges(db, rows, opts = {}) {
+  const owners = await db.query('SELECT id, name, entity, age, birth_year FROM owners');
+  const links = await db.query('SELECT property_id, owner_id FROM property_owners');
+  const plan = classifyResearchRows(rows, { owners, links });
+  if (!opts.dryRun) {
+    await db.tx(async (t) => {
+      for (const u of plan.updates) {
+        await t.query('UPDATE owners SET birth_year=$1, age_source=$2, age_confidence=$3, updated_at=now() WHERE id=$4 AND birth_year IS NULL', [u.birthYear, u.source, u.confidence, u.ownerId]);
+      }
+    });
+  }
+  return { dryRun: !!opts.dryRun, updates: plan.updates, skipped: plan.skipped, updated: plan.updates.length };
+}
 async function importOwnerAges(db, rows, opts = {}) {
   const today = opts.today || new Date().toISOString().slice(0, 10);
   const todayYear = Number(String(today).slice(0, 4));
@@ -130,4 +183,4 @@ function parseAgeCsv(text) {
   });
 }
 
-module.exports = { importOwnerAges, ageLabel, crmAgeNote, parseAgeCsv, birthYearFromRow, hasBirthYear };
+module.exports = { importOwnerAges, applyResearchAges, classifyResearchRows, ageLabel, crmAgeNote, parseAgeCsv, birthYearFromRow, hasBirthYear };

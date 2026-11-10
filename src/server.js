@@ -1,4 +1,5 @@
-const express = require('express'); const path = require('path');
+const express = require('express'); const path = require('path'); const crypto = require('crypto');
+const multer = require('multer');
 const { migrate } = require('./db');
 const auth = require('./auth');
 const V = require('./views');
@@ -24,6 +25,8 @@ app.disable('x-powered-by');
 app.use((req, res, next) => { res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Referrer-Policy', 'same-origin'); res.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
 app.use('/static', express.static(path.join(__dirname, '..', 'public'), { maxAge: '1d' }));
 app.use(express.urlencoded({ extended: false, limit: '200kb' }));
+const ageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const ageImports = new Map();
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
 app.get('/healthz', (req, res) => res.send('ok'));
@@ -141,7 +144,7 @@ app.get('/', wrap(async (req, res) => {
     <a class="card" href="/owners"><b>${c.owners}</b><span>Owners</span></a>
     <a class="card" href="/tenants"><b>${c.tenants}</b><span>Tenants</span></a>
   </div>
-  <div class="actions"><a class="btn" href="/properties/new">+ Add property</a> <a class="btn ghost" href="/owners/new">+ Add owner</a> <a class="btn ghost" href="/export.csv">Export CSV</a></div>
+  <div class="actions"><a class="btn" href="/properties/new">+ Add property</a> <a class="btn ghost" href="/owners/new">+ Add owner</a> <a class="btn ghost" href="/export.csv">Export CSV</a> <a class="btn ghost" href="/admin/import-owner-ages">Import owner ages</a></div>
   <h2>Properties by state</h2>${stateGrid(states)}
   <h2>Recent activity</h2>${recent.length ? activityList(recent, true) : '<p class="muted">No calls logged in the app yet.</p>'}`, { active: 'home' }));
 }));
@@ -773,6 +776,44 @@ app.get('/calls', wrap(async (req, res) => {
 
 const comps = require('./comps-routes')(app, () => db, wrap);
 require('./buyers-routes')(app, () => db, wrap);
+
+app.get('/admin/import-owner-ages', (req, res) => {
+  res.send(layout('Import owner ages', `<h1>Import owner ages</h1>
+  <p class="muted">Upload a research CSV. Nothing is saved until you apply the preview. Only rows with a birth year and high or medium confidence are imported, and only when that owner is already linked to the property. An existing birth year is left as it is. The free-text age note is not changed, and no owner is created.</p>
+  <form method="post" action="/admin/import-owner-ages/preview" enctype="multipart/form-data" class="form">
+    <label>CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
+    <button>Preview</button>
+  </form>
+  <p class="small muted">Columns: crm_property_id, crm_owner_id, owner_entity, person_name, birth_year, age_as_of_today, source, match_confidence, match_basis, notes.</p>`, { active: '' }));
+});
+app.post('/admin/import-owner-ages/preview', ageUpload.single('file'), wrap(async (req, res) => {
+  if (!req.file) return res.status(400).send(layout('Import owner ages', '<h1>Choose a CSV file</h1><p><a href="/admin/import-owner-ages">Back</a></p>'));
+  const rows = Ages.parseAgeCsv(req.file.buffer.toString('utf8'));
+  const plan = await Ages.applyResearchAges(db, rows, { dryRun: true });
+  const token = crypto.randomBytes(16).toString('hex');
+  ageImports.set(token, { rows, expires: Date.now() + 30 * 60 * 1000 });
+  const upd = plan.updates.map((u) => `<tr><td>${u.line}</td><td>${esc(u.name)} <span class="muted">#${u.ownerId}</span></td><td>${u.propertyId}</td><td>${u.birthYear}</td><td>${esc(u.source)}</td><td>${esc(u.confidence)}</td><td class="small">${u.warning ? esc(u.warning) : ''}</td></tr>`).join('');
+  const skip = plan.skipped.map((s) => `<tr><td>${s.line}</td><td>${esc(s.reason)}</td><td class="small">${s.warning ? esc(s.warning) : ''}</td></tr>`).join('');
+  res.send(layout('Preview owner ages', `<h1>Preview</h1>
+  <p class="muted">${plan.updates.length} would update. ${plan.skipped.length} skipped. Nothing has been saved.</p>
+  <h2>Would update</h2>
+  ${plan.updates.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Row</th><th>Owner</th><th>Property</th><th>Birth year</th><th>Source</th><th>Confidence</th><th>Warning</th></tr></thead><tbody>${upd}</tbody></table></div>` : '<p class="muted">None.</p>'}
+  <h2>Skipped</h2>
+  ${plan.skipped.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Row</th><th>Reason</th><th>Warning</th></tr></thead><tbody>${skip}</tbody></table></div>` : '<p class="muted">None.</p>'}
+  ${plan.updates.length ? `<form method="post" action="/admin/import-owner-ages/apply" class="form"><input type="hidden" name="token" value="${esc(token)}"><button>Apply ${plan.updates.length} update${plan.updates.length === 1 ? '' : 's'}</button></form>` : ''}
+  <p><a href="/admin/import-owner-ages">Upload a different file</a></p>`, { active: '' }));
+}));
+app.post('/admin/import-owner-ages/apply', wrap(async (req, res) => {
+  const token = String(req.body.token || '');
+  const held = ageImports.get(token);
+  if (!held || held.expires < Date.now()) return res.status(400).send(layout('Import owner ages', '<h1>Preview expired</h1><p>Upload the file again.</p><p><a href="/admin/import-owner-ages">Back</a></p>'));
+  const plan = await Ages.applyResearchAges(db, held.rows, { dryRun: false });
+  ageImports.delete(token);
+  res.send(layout('Owner ages imported', `<h1>Import applied</h1>
+  <p>${plan.updated} owner${plan.updated === 1 ? '' : 's'} updated. ${plan.skipped.length} row${plan.skipped.length === 1 ? '' : 's'} skipped.</p>
+  <p class="muted">Running the same file again will not change birth years that are already set.</p>
+  <p><a href="/admin/import-owner-ages">Import another file</a></p>`, { active: '' }));
+}));
 
 app.use((err, req, res, next) => { console.error(err); res.status(500).send(layout('Error', `<h1>Something went wrong</h1><p class="muted">${esc(err.message)}</p>`)); });
 
