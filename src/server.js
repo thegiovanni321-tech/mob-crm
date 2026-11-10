@@ -5,6 +5,7 @@ const V = require('./views');
 const { esc, layout, propertyRows, filterForm, badge, newBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES } = V;
 const { IS_NEW_SQL } = require('./property-flags');
 const Nav = require('./property-nav');
+const Follow = require('./followups');
 const TZ = process.env.TZ_NAME || 'America/New_York';
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const plusDays = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -228,9 +229,22 @@ app.get('/callbacks', wrap(async (req, res) => {
   const t = today();
   const due = await listProps({ cb: 'due', sort: 'cbdesc' }, 2000);
   const soon = await db.query(`${PROP_SELECT} WHERE p.callback_date > $1::date AND p.callback_date <= $1::date + 14 ORDER BY p.callback_date`, [t]);
-  res.send(layout('Callbacks', `<h1>Callbacks</h1><p class="muted">Today is ${fmtDate(t)} (${esc(TZ)}).</p>
-  <h2>Due or overdue <span class="muted">(${due.n}, most recent first)</span></h2>${propertyRows(due.rows, { list: { cb: 'due', sort: 'cbdesc' } })}
-  <h2>Next 14 days <span class="muted">(${soon.length})</span></h2>${propertyRows(soon, { list: { cb: 'upcoming', sort: 'cb' } })}`, { active: 'callbacks' }));
+  const fuState = (nz(req.query.fu_state) || '').toUpperCase();
+  const fuProps = await db.query('SELECT id, address, city, state, status, last_contacted, callback_date, notes FROM properties');
+  const fuActs = await db.query('SELECT id, property_id, owner_id, kind, outcome, notes, activity_date FROM activities');
+  const fuOwners = await db.query('SELECT po.property_id, o.id, o.name, o.entity FROM property_owners po JOIN owners o ON o.id = po.owner_id ORDER BY o.id');
+  const ownersOf = new Map();
+  for (const o of fuOwners) {
+    if (!ownersOf.has(o.property_id)) ownersOf.set(o.property_id, []);
+    ownersOf.get(o.property_id).push(o);
+  }
+  for (const p of fuProps) p.owners = ownersOf.get(p.id) || [];
+  const follow = Follow.buildFollowUps({ today: t, properties: fuProps, activities: fuActs, state: fuState });
+  const fuStates = [...new Set(fuProps.map((p) => p.state).filter(Boolean))].sort();
+  res.send(layout('Callbacks', `<h1>Callbacks</h1><p class="muted">Today is ${fmtDate(t)} (${esc(TZ)}). Scheduled callbacks below are only dates set when a call was logged. Imported spreadsheet callback dates stay last-contacted and are not listed here.</p>
+  <h2 id="due">Due or overdue <span class="muted">(${due.n}, most recent first)</span></h2>${propertyRows(due.rows, { list: { cb: 'due', sort: 'cbdesc' } })}
+  <h2 id="soon">Next 14 days <span class="muted">(${soon.length})</span></h2>${propertyRows(soon, { list: { cb: 'upcoming', sort: 'cb' } })}
+  ${Follow.renderFollowUps(follow, { state: fuState, states: fuStates })}`, { active: 'callbacks' }));
 }));
 
 // ---------- property detail / edit ----------
