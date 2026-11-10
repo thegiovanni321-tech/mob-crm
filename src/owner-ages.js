@@ -94,15 +94,30 @@ async function importOwnerAges(db, rows, opts = {}) {
   return stats;
 }
 
+function hasBirthYear(owner) {
+  return !!(owner && owner.birth_year != null && String(owner.birth_year).trim() !== '');
+}
 function ageLabel(owner, today) {
-  const year = Number(owner && owner.birth_year);
+  if (!hasBirthYear(owner)) return '';
+  const year = Number(owner.birth_year);
   const now = Number(String(today || '').slice(0, 4));
-  if (!Number.isInteger(year) || !Number.isInteger(now)) return '';
+  if (!Number.isInteger(year) || year < 1900 || !Number.isInteger(now) || year > now) return '';
   const age = now - year;
   const parts = [`Born ${year}`, `age ${age} as of today`];
   if (owner.age_source) parts.push(String(owner.age_source));
   if (owner.age_confidence) parts.push(`${owner.age_confidence} confidence`);
   return parts.join(' · ');
+}
+function crmAgeNote(owner) {
+  if (!owner || hasBirthYear(owner)) return '';
+  const s = String(owner.age == null ? '' : owner.age).trim();
+  if (!s) return '';
+  if (/\bdeceased\b/i.test(s)) return `${s} · estate / heirs`;
+  if (/^\d+$/.test(s)) {
+    const age = Number(s);
+    if (age >= 18 && age <= 110) return `Age ${age} · CRM age field · medium confidence`;
+  }
+  return '';
 }
 
 function parseAgeCsv(text) {
@@ -115,4 +130,4 @@ function parseAgeCsv(text) {
   });
 }
 
-module.exports = { importOwnerAges, ageLabel, parseAgeCsv, birthYearFromRow };
+module.exports = { importOwnerAges, ageLabel, crmAgeNote, parseAgeCsv, birthYearFromRow, hasBirthYear };

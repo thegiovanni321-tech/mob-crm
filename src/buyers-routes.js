@@ -58,7 +58,7 @@ module.exports = function mountBuyers(app, getDb, wrap) {
       ${!all.length ? '<p class="box muted">No buyers with purchase history yet. Buyers appear here as sale comps with a buyer or purchaser are added (Comps › Import, or the sync API).</p>'
         : rows.length ? `<div class="tblwrap"><table class="tbl comps"><thead><tr>${th('name', 'Buyer')}${th('date', 'Last purchase')}<th>Address</th><th>City, ST</th>${th('price', 'Price', 1)}${th('cap', 'Cap', 1)}${th('years', 'Lease yrs left', 1)}${th('count', 'Buys', 1)}<th>Contact</th></tr></thead><tbody>
         ${rows.map((b) => { const L = b.last; return `<tr><td><a href="/buyers/${b.id}"><b>${esc(b.display)}</b></a>${b.sub ? `<br><span class="small muted">${esc(b.sub)}</span>` : ''}${b.owner_id ? ' <span class="small" title="Linked CRM owner">👤</span>' : ''}</td>
-          <td>${fmtDate(L.sale_date)}</td><td>${L.property_id ? `<a href="/properties/${L.property_id}">${esc(L.address)}</a>` : `<a href="/comps/sales/${L.id}">${esc(L.address)}</a>`}</td><td>${esc(place(L))}</td>
+          <td>${fmtDate(L.sale_date)}</td><td>${L.property_id ? `<a href="/properties/${L.property_id}?from=buyer&bid=${b.id}&cb_at=0">${esc(L.address)}</a>` : `<a href="/comps/sales/${L.id}">${esc(L.address)}</a>`}</td><td>${esc(place(L))}</td>
           <td class="num">${money(L.price)}</td><td class="num">${pct(L.cap_rate)}</td><td class="num">${yrs(L.years_remaining)}</td><td class="num">${b.purchases.length}</td><td class="small">${contactCell(b)}</td></tr>`; }).join('')}</tbody></table></div>`
         : '<p class="muted">No buyers match.</p>'}`, { active: 'buyers' }));
   }));
@@ -84,10 +84,10 @@ module.exports = function mountBuyers(app, getDb, wrap) {
           <td class="small">${esc(c.contact_source)}</td><td>${esc(c.confidence)}</td><td class="small">${c.sale_comp_id ? `<a href="/comps/sales/${c.sale_comp_id}">${esc(c.linked_comp_address || 'comp')}</a>` : esc(c.linked_comp_address || '')}${c.linked_sale_date ? ' · ' + fmtDate(c.linked_sale_date) : ''}</td><td class="small">${esc(c.notes)}</td></tr>`).join('')}</tbody></table></div>`
         : !phones.length && !email ? '<p class="muted small">No contact details on file for this buyer.</p>' : ''}
       ${b.purchases.length ? '' : '<p class="muted">No linked purchases yet (added from a buyer-contacts file).</p>'}<h2>Purchases</h2><div class="tblwrap"><table class="tbl comps"><thead><tr><th>Date</th><th>Address</th><th>City, ST</th><th class="num">Price</th><th class="num">RBA</th><th class="num">$/SF</th><th class="num">Cap</th><th class="num">Lease yrs left</th><th>Tenant</th><th>Seller</th></tr></thead><tbody>
-      ${b.purchases.map((c) => `<tr><td><a href="/comps/sales/${c.id}">${fmtDate(c.sale_date) || '(no date)'}</a></td>
-        <td>${c.property_id ? `<a href="/properties/${c.property_id}"><b>${esc(c.address)}</b></a>` : esc(c.address)}</td><td>${esc(place(c))}</td>
+      ${(() => { const seen = new Set(); let n = 0; const at = new Map(); for (const c of b.purchases) { if (!c.property_id || seen.has(c.property_id)) continue; seen.add(c.property_id); at.set(c.property_id, n++); } return b.purchases.map((c) => `<tr><td><a href="/comps/sales/${c.id}">${fmtDate(c.sale_date) || '(no date)'}</a></td>
+        <td>${c.property_id ? `<a href="/properties/${c.property_id}?from=buyer&bid=${b.id}&cb_at=${at.get(c.property_id)}"><b>${esc(c.address)}</b></a>` : esc(c.address)}</td><td>${esc(place(c))}</td>
         <td class="num">${money(c.price)}</td><td class="num">${numf(c.rba)}</td><td class="num">${c.ppsf ? '$' + numf(c.ppsf) : ''}</td><td class="num">${pct(c.cap_rate)}</td>
-        <td class="num">${c.lease_id ? `<a href="/comps/leases/${c.lease_id}">${yrs(c.years_remaining) || '—'}</a>` : ''}</td><td class="small">${esc(c.tenants || c.prop_tenants || '')}</td><td class="small">${esc(c.seller)}</td></tr>`).join('')}
+        <td class="num">${c.lease_id ? `<a href="/comps/leases/${c.lease_id}">${yrs(c.years_remaining) || '—'}</a>` : ''}</td><td class="small">${esc(c.tenants || c.prop_tenants || '')}</td><td class="small">${esc(c.seller)}</td></tr>`).join(''); })()}
       </tbody></table></div>`, { active: 'buyers' }));
   }));
 
@@ -131,8 +131,8 @@ module.exports = function mountBuyers(app, getDb, wrap) {
       <nav class="subtabs"><a href="/listings" class="${st ? '' : 'on'}">All</a>${STATUSES.map((s) => `<a href="/listings?status=${encodeURIComponent(s)}" class="${st === s ? 'on' : ''}">${s}</a>`).join('')}</nav>
       <p class="actions"><a class="btn small" href="/listings/new">+ New listing</a></p>
       ${rows.length ? `<div class="tblwrap"><table class="tbl comps"><thead><tr><th>Address</th><th>City, ST</th><th>Tenant</th><th class="num">Asking</th><th class="num">Cap</th><th class="num">NOI</th><th class="num">SF</th><th class="num">Lease yrs left</th><th>Status</th></tr></thead><tbody>
-      ${rows.map((L) => `<tr><td><a href="/listings/${L.id}"><b>${esc(L.address)}</b></a>${L.property_id ? ` <a class="small" href="/properties/${L.property_id}" title="Linked CRM property">🏢</a>` : ''}</td><td>${esc(place(L))}</td>
-        <td>${esc(L.tenant || L.tenant_group || '')}</td><td class="num">${money(L.asking_price)}</td><td class="num">${pct(L.cap_rate)}</td><td class="num">${money(L.noi)}</td><td class="num">${numf(L.sf)}</td><td class="num">${yrs(L.years_remaining)}</td><td>${stBadge(L.status)}</td></tr>`).join('')}
+      ${(() => { const seen = new Set(); const at = new Map(); for (const L of rows) { if (!L.property_id || seen.has(L.property_id)) continue; seen.add(L.property_id); at.set(L.property_id, at.size); } return rows.map((L) => `<tr><td><a href="/listings/${L.id}"><b>${esc(L.address)}</b></a>${L.property_id ? ` <a class="small" href="/properties/${L.property_id}?from=listings${st ? '&lst=' + encodeURIComponent(st) : ''}&cb_at=${at.get(L.property_id)}" title="Linked CRM property">🏢</a>` : ''}</td><td>${esc(place(L))}</td>
+        <td>${esc(L.tenant || L.tenant_group || '')}</td><td class="num">${money(L.asking_price)}</td><td class="num">${pct(L.cap_rate)}</td><td class="num">${money(L.noi)}</td><td class="num">${numf(L.sf)}</td><td class="num">${yrs(L.years_remaining)}</td><td>${stBadge(L.status)}</td></tr>`).join(''); })()}
       </tbody></table></div>` : `<p class="box muted">No listings${st ? ` marked ${esc(st)}` : ''} yet. Add one to see a ranked list of likely buyers from sale-comp purchase history.</p>`}`, { active: 'listings' }));
   }));
 
@@ -205,7 +205,7 @@ module.exports = function mountBuyers(app, getDb, wrap) {
     const cell = (v, max) => `<td class="num">${v ? `<b>${v}</b>` : '<span class="muted">0</span>'}<span class="muted small">/${max}</span></td>`;
     res.send(layout(L.address, `<p class="crumbs"><a href="/listings">Listings</a> ›</p>
       <div class="ph"><div><h1>${esc(L.address)}</h1><p class="muted">${esc([L.city, L.state, L.zip].filter(Boolean).join(', '))}</p></div><div>${stBadge(L.status)}</div></div>
-      ${L.property_id ? `<p>Linked property: <a href="/properties/${L.property_id}">${esc(L.prop_address)}</a></p>` : '<p class="muted small">Not linked to a CRM property (no address match).</p>'}
+      ${L.property_id ? `<p>Linked property: <a href="/properties/${L.property_id}?from=listings${L.status ? '&lst=' + encodeURIComponent(L.status) : ''}&cb_at=0">${esc(L.prop_address)}</a></p>` : '<p class="muted small">Not linked to a CRM property (no address match).</p>'}
       ${atts.length ? `<p class="box" style="display:inline-block">${Att.linksHtml(atts)}</p>` : ''}
       <dl class="facts">${facts.map(([a, b]) => `<div><dt>${a}</dt><dd>${esc(b)}</dd></div>`).join('')}</dl>
       ${L.notes ? `<h2>Notes</h2><div class="pre box">${esc(L.notes)}</div>` : ''}

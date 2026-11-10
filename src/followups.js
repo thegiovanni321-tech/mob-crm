@@ -246,7 +246,12 @@ const RETIRE = [
   { re: /\bolder doctor\b/i, label: 'Older doctor' },
   { re: /\bwinding down\b/i, label: 'Winding down' },
   { re: /\bsuccession\b/i, label: 'Succession' },
-  { re: /\bhealth\b(?!\s*(?:care|system))/i, label: 'Health' },
+  { re: /\bhealth issues\b/i, label: 'Health' },
+  { re: /\bhealth problems\b/i, label: 'Health' },
+  { re: /\bin poor health\b/i, label: 'Health' },
+  { re: /\b(?:his|her|their) health\b/i, label: 'Health' },
+  { re: /\bhealth reasons\b/i, label: 'Health' },
+  { re: /\billness(?:es)?\b/i, label: 'Health' },
   { re: /\bpassed away\b/i, label: 'Passed away' },
   { re: /\bheirs?\b/i, label: 'Heirs' },
   { re: /\b(?<!real\s)estate\b/i, label: 'Estate' },
@@ -268,24 +273,39 @@ function noteStance(text, outcome) {
   const negated = !positive && (found.excluded.length > 0 || outcome === 'Not interested');
   return { positive, sells: found.sells || (positive ? [positive] : []), later: found.later, negated, excluded: found.excluded };
 }
-function qualifyingAge(owner, today) {
-  const year = Number(owner && owner.birth_year);
-  const conf = String((owner && owner.age_confidence) || '').trim().toLowerCase();
-  const now = Number(String(today).slice(0, 4));
-  if (!Number.isInteger(year) || year < 1900 || year > now - 18) return null;
-  if (conf !== 'high' && conf !== 'medium') return null;
-  const age = now - year;
-  if (age < SIGNALS.ageFloor) return null;
-  const points = age >= SIGNALS.ageHigh
+function agePoints(age) {
+  if (age < SIGNALS.ageFloor) return 0;
+  return age >= SIGNALS.ageHigh
     ? SIGNALS.age75 + Math.min(age - SIGNALS.ageHigh, SIGNALS.age75Cap)
     : SIGNALS.age65 + Math.min(age - SIGNALS.ageFloor, SIGNALS.age65Cap);
-  const source = owner.age_source ? `, ${owner.age_source}` : '';
-  return { points, label: `Age ${age} (born ${year}${source}, ${conf})`, age };
+}
+function qualifyingAge(owner, today) {
+  const rawYear = owner && owner.birth_year;
+  const hasYear = rawYear != null && String(rawYear).trim() !== '';
+  if (hasYear) {
+    const year = Number(rawYear);
+    const conf = String((owner && owner.age_confidence) || '').trim().toLowerCase();
+    const now = Number(String(today).slice(0, 4));
+    if (!Number.isInteger(year) || year < 1900 || year > now - 18) return null;
+    if (conf !== 'high' && conf !== 'medium') return null;
+    const age = now - year;
+    const points = agePoints(age);
+    if (!points) return null;
+    const source = owner.age_source ? `, ${owner.age_source}` : '';
+    return { points, label: `Age ${age} (born ${year}${source}, ${conf})`, age };
+  }
+  const text = String(owner && owner.age != null ? owner.age : '').trim();
+  if (!/^\d+$/.test(text)) return null;
+  const age = Number(text);
+  if (age < 18 || age > 110) return null;
+  const points = agePoints(age);
+  if (!points) return null;
+  return { points, label: `Age ${age} (CRM age field, medium)`, age };
 }
 function retirementHit(text) {
   const src = normalizeNote(text);
   for (const spec of RETIRE) {
-    const m = spec.re.exec(src);
+    const m = new RegExp(spec.re.source, 'i').exec(src);
     if (!m) continue;
     if (negationBefore(src, m.index)) continue;
     return { label: spec.label, snippet: snippet(src, m.index, m[0].length) };
@@ -437,7 +457,9 @@ function buildFollowUps({ today, properties, activities, state }) {
     }
     if (/\bvacant(?:cy)?\b/i.test(`${p.tenancy || ''} ${corpus}`)) tags.push({ label: 'Vacant', points: SIGNALS.vacancy });
     if (/\brelocat(?:e|es|ed|ing|ion)\b|\bmoving (?:the )?practice\b/i.test(normalizeNote(corpus))) tags.push({ label: 'Relocation', points: SIGNALS.relocation });
-    if ((p.owners || []).some(isEstateOwner)) tags.push({ label: 'Estate or trust', points: SIGNALS.estate });
+    const deceased = (p.owners || []).some((o) => /\bdeceased\b/i.test(String(o.age || '')));
+    if (deceased) tags.push({ label: 'Deceased', points: SIGNALS.estate });
+    else if ((p.owners || []).some(isEstateOwner)) tags.push({ label: 'Estate or trust', points: SIGNALS.estate });
     const mail = mailingState((owner && owner.mailing_address) || (p.owners || []).map((o) => o.mailing_address).find(Boolean) || '');
     if (mail && p.state && mail !== String(p.state).toUpperCase()) tags.push({ label: `Out of state (${mail})`, points: SIGNALS.outOfState });
     if (!snippetText) snippetText = clean(latest.notes || p.notes || '').slice(0, 140);
@@ -471,10 +493,10 @@ function renderFollowUps(model, { state, states }) {
     ? `<p class="muted small"><a href="/callbacks/not-selling${state ? `?fu_state=${encodeURIComponent(state)}` : ''}">${model.excluded.length} clearly not selling, hidden</a></p>`
     : '';
   const tags = (r) => r.tags.map((t) => `<span class="badge">${esc(t.label)}${t.points ? ` <em>${t.points}</em>` : ''}</span>`).join(' ');
-  const row = (r) => `<tr>
+  const row = (r, i) => `<tr id="p-${r.propertyId}">
     <td class="num"><b>${r.score}</b></td>
     <td>${esc(r.ownerName || 'No owner on file')}${r.ownerEntity ? `<div class="muted small">${esc(r.ownerEntity)}</div>` : ''}</td>
-    <td><a href="/properties/${r.propertyId}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
+    <td><a href="/properties/${r.propertyId}?from=cb${state ? `&fu_state=${encodeURIComponent(state)}` : ''}&cb_at=${i}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
     <td class="small">${tags(r)}</td>
     <td>${esc(fmtDate(r.lastTalked))}</td>
     <td class="num">${r.daysSince}</td>
@@ -487,9 +509,9 @@ function renderFollowUps(model, { state, states }) {
 }
 function renderNotSelling(model, { state, states }) {
   const { esc, fmtDate } = require('./views');
-  const row = (r) => `<tr>
+  const row = (r, i) => `<tr id="p-${r.propertyId}">
     <td>${esc(r.ownerName || 'No owner on file')}</td>
-    <td><a href="/properties/${r.propertyId}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
+    <td><a href="/properties/${r.propertyId}?from=cbhide${state ? `&fu_state=${encodeURIComponent(state)}` : ''}&cb_at=${i}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
     <td class="small"><b>${esc(r.phrase || '')}</b><div>${esc(r.snippet || '')}</div></td>
     <td>${esc(fmtDate(r.date))}</td></tr>`;
   return `${followFilter(state, states, '/callbacks/not-selling')}

@@ -35,5 +35,11 @@ test('age import fills an empty birth year and does not create or overwrite owne
   assert.equal(Number(owners[1].birth_year), 1960);
   assert.equal(owners[1].age_source, 'manual');
   assert.equal(ageLabel(owners[0], '2026-11-10'), 'Born 1948 · age 78 as of today · Nexis · high confidence');
+  const { ageLabel: label, crmAgeNote } = require('../src/owner-ages');
+  assert.equal(label({ birth_year: null }, '2026-11-10'), '');
+  assert.equal(label({ birth_year: '' }, '2026-11-10'), '');
+  assert.equal(crmAgeNote({ birth_year: null, age: '93' }), 'Age 93 · CRM age field · medium confidence');
+  assert.equal(crmAgeNote({ birth_year: null, age: '68 (Deceased)' }), '68 (Deceased) · estate / heirs');
+  assert.equal(crmAgeNote({ birth_year: 1948, age: '93' }), '');
   if (prev === undefined) delete process.env.DATA_DIR; else process.env.DATA_DIR = prev;
 });

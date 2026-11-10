@@ -20,7 +20,7 @@ function layout(title, body, opts = {}) {
   const calls = require('./calls');
   const todayN = typeof callsToday === 'number' ? callsToday : calls.get().callsToday;
   const callsLink = typeof todayN === 'number'
-    ? `<a class="calls-today" href="/calls" title="Voicemails, texts, and conversations today (Eastern Time)">${esc(calls.label(todayN))}</a>`
+    ? `<a class="calls-today" href="/calls" title="Logged calls today, Eastern Time">${esc(calls.label(todayN))}</a>`
     : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="theme-color" content="#0f3d5e"><title>${esc(title)} · MOB CRM</title>
@@ -36,11 +36,13 @@ function newBadge(p) {
 }
 function propertyRows(rows, { showState = true, list = null } = {}) {
   if (!rows.length) return '<p class="muted">No properties match.</p>';
-  const q = list ? qs(list) : '';
-  return `<div class="list">${rows.map((p) => `<a class="row" href="/properties/${p.id}${q}">
+  return `<div class="list">${rows.map((p, i) => {
+    const q = list ? qs(list.from ? { ...list, cb_at: i } : list) : '';
+    return `<a class="row" id="p-${p.id}" href="/properties/${p.id}${q}">
   <div class="r-main"><strong>${esc(p.address)}</strong>${newBadge(p)}<span class="muted">${esc([p.city, showState ? p.state || p.state_raw : null, p.zip].filter(Boolean).join(', '))}</span></div>
   <div class="r-meta"><span>${esc(p.owner_names || p.entities || '—')}</span><span class="muted small">${esc(p.tenant_names || '')}</span></div>
-  <div class="r-side">${badge(p.status)}${p.callback_date ? `<span class="small ${p.cb_due ? 'due' : 'muted'}">CB ${fmtDate(p.callback_date)}</span>` : ''}</div></a>`).join('')}</div>`;
+  <div class="r-side">${badge(p.status)}${p.callback_date ? `<span class="small ${p.cb_due ? 'due' : 'muted'}">CB ${fmtDate(p.callback_date)}</span>` : ''}</div></a>`;
+  }).join('')}</div>`;
 }
 function filterForm(f, tenants, states, action = '/properties') {
   const opt = (v, l, sel) => `<option value="${esc(v)}"${String(sel) === String(v) ? ' selected' : ''}>${esc(l)}</option>`;

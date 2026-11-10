@@ -210,7 +210,7 @@ test('scores put sell interest above a due callback, then 75+ above 65+, then a 
   ];
   const { ranked } = buildFollowUps({ today: TODAY, properties, activities });
   const ids = ranked.map((r) => r.propertyId);
-  assert.deepEqual(ids.slice(0, 4), [5, 4, 3, 2]);
+  assert.deepEqual(ids.slice(0, 4), [5, 4, 7, 3]);
   assert.ok(ranked[0].score > ranked[1].score);
   assert.ok(ranked[1].score > ranked[2].score);
   assert.ok(ranked[2].score > ranked[3].score);
@@ -220,10 +220,59 @@ test('scores put sell interest above a due callback, then 75+ above 65+, then a 
   const plain = ranked.find((r) => r.propertyId === 1);
   const textAge = ranked.find((r) => r.propertyId === 7);
   assert.equal(low.score, plain.score);
-  assert.equal(textAge.score, plain.score);
   assert.equal(plain.score, SIGNALS.stale);
-  assert.doesNotMatch(textAge.tags.map((t) => t.label).join(' '), /Age /);
+  assert.match(textAge.tags.map((t) => t.label).join(' '), /Age 90 \(CRM age field, medium\)/);
+  assert.doesNotMatch(textAge.tags.map((t) => t.label).join(' '), /1920/);
   const notInterested = buildFollowUps({ today: TODAY, properties: [prop()], activities: [talk({ outcome: 'Not interested', notes: '' })] });
   assert.equal(notInterested.ranked.length, 0);
   assert.equal(notInterested.excluded.length, 1);
+});
+
+test('health matches owner illness, not a tenant or company name', () => {
+  function row(notes, age) {
+    return buildFollowUps({
+      today: TODAY,
+      properties: [prop({ notes, owners: [{ id: 9, name: 'Ada Sample', entity: 'Sample Holdings', age: age || null }] })],
+      activities: [talk({ notes: 'Spoke briefly.' })],
+    });
+  }
+  for (const brand of ["Tenant is Onsite Women's Health.", 'Building is Advent Health.', 'Reliant Health occupies the suite.']) {
+    const branded = row(brand);
+    assert.equal(branded.ranked[0].score, SIGNALS.stale, brand);
+    assert.doesNotMatch(branded.ranked[0].tags.map((t) => t.label).join(' '), /Health/);
+  }
+  for (const real of ['Owner has health issues.', 'She is in poor health.', 'Call about her health.', 'Selling for health reasons.', 'A long illness.']) {
+    const hit = row(real);
+    assert.ok(hit.ranked[0].score >= SIGNALS.stale + SIGNALS.retirement, real);
+    assert.match(hit.ranked[0].tags.map((t) => t.label).join(' '), /Health/);
+  }
+  const negated = row('He is not in poor health and is not retiring.');
+  assert.equal(negated.ranked[0].score, SIGNALS.stale);
+  const retiring = row('He is retiring next year.');
+  assert.match(retiring.ranked[0].tags.map((t) => t.label).join(' '), /Retiring/);
+});
+
+test('a clean CRM age counts, a deceased age is an estate signal, and a birth year wins', () => {
+  function aged(age, birth, confidence) {
+    return buildFollowUps({
+      today: TODAY,
+      properties: [prop({ owners: [{ id: 9, name: 'Ada Sample', entity: 'Sample Holdings', age, birth_year: birth, age_confidence: confidence, age_source: birth ? 'Nexis' : null }] })],
+      activities: [talk({ notes: 'Spoke briefly.' })],
+    }).ranked[0];
+  }
+  const ninety = aged('93', null, null);
+  assert.match(ninety.tags.map((t) => t.label).join(' '), /Age 93 \(CRM age field, medium\)/);
+  assert.ok(ninety.score > aged('65', null, null).score);
+  assert.equal(aged('40', null, null).score, SIGNALS.stale);
+  const dead = aged('Deceased', null, null);
+  assert.match(dead.tags.map((t) => t.label).join(' '), /Deceased/);
+  assert.doesNotMatch(dead.tags.map((t) => t.label).join(' '), /CRM age field/);
+  const deadAge = aged('68 (Deceased)', null, null);
+  assert.match(deadAge.tags.map((t) => t.label).join(' '), /Deceased/);
+  assert.doesNotMatch(deadAge.tags.map((t) => t.label).join(' '), /Age 68/);
+  const nexis = aged('40', 1950, 'high');
+  assert.match(nexis.tags.map((t) => t.label).join(' '), /born 1950, Nexis, high/);
+  assert.doesNotMatch(nexis.tags.map((t) => t.label).join(' '), /CRM age field/);
+  const low = aged('93', 1940, 'low');
+  assert.equal(low.score, SIGNALS.stale);
 });

@@ -7,6 +7,7 @@ const { IS_NEW_SQL } = require('./property-flags');
 const Nav = require('./property-nav');
 const Follow = require('./followups');
 const Ages = require('./owner-ages');
+const Return = require('./callback-return');
 const TZ = process.env.TZ_NAME || 'America/New_York';
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const plusDays = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -163,7 +164,7 @@ app.get('/states/:st', wrap(async (req, res) => {
   <details class="box"><summary>Tenants in ${esc(st)} (${tenants.length})</summary><div class="chips">${tenants.map((t) => `<a href="/states/${esc(st)}?tenant=${t.id}">${esc(t.name)} <em>${t.n}</em></a>`).join('')}</div></details>
   ${filterForm(f, await tenantList(), await stateCounts(), '/properties')}
   <p><a class="btn ghost small" href="/export.csv${qs({ ...f })}">Export these to CSV</a> ${sortLinks(f, '/states/' + encodeURIComponent(st), { ...f, state: '' }, 'city')}</p>
-  ${propertyRows(rows, { showState: false, list: f })}${pager(n, page, 200, '/states/' + encodeURIComponent(st) + qs({ ...f, state: '' }))}`, { active: 'states' }));
+  ${propertyRows(rows, { showState: false, list: { ...f, from: 'state' } })}${pager(n, page, 200, '/states/' + encodeURIComponent(st) + qs({ ...f, state: '' }))}`, { active: 'states' }));
 }));
 app.get('/tenants', wrap(async (req, res) => {
   const q = nz(req.query.q);
@@ -273,8 +274,8 @@ app.get('/callbacks', wrap(async (req, res) => {
   const fuState = (nz(req.query.fu_state) || '').toUpperCase();
   const { follow, states } = await followModel(fuState);
   res.send(layout('Callbacks', `<h1>Callbacks</h1><p class="muted">Today is ${fmtDate(t)} (${esc(TZ)}). Scheduled callbacks below are only dates set when a call was logged. Imported spreadsheet callback dates stay last-contacted and are not listed here.</p>
-  <h2 id="due">Due or overdue <span class="muted">(${due.n}, most recent first)</span></h2>${propertyRows(due.rows, { list: { cb: 'due', sort: 'cbdesc' } })}
-  <h2 id="soon">Next 14 days <span class="muted">(${soon.length})</span></h2>${propertyRows(soon, { list: { cb: 'upcoming', sort: 'cb' } })}
+  <h2 id="due">Due or overdue <span class="muted">(${due.n}, most recent first)</span></h2>${propertyRows(due.rows, { list: { from: 'cbdue', fu_state: fuState } })}
+  <h2 id="soon">Next 14 days <span class="muted">(${soon.length})</span></h2>${propertyRows(soon, { list: { from: 'cbsoon', fu_state: fuState } })}
   ${Follow.renderFollowUps(follow, { state: fuState, states })}`, { active: 'callbacks' }));
 }));
 
@@ -292,7 +293,9 @@ function ownerCard(o, pid) {
   const em = firstEmail(o.email);
   const web = o.website ? (/^https?:/i.test(o.website) ? o.website : 'https://' + o.website) : '';
   const born = Ages.ageLabel(o, today());
-  return `<div class="owner"><div class="o-head"><a href="/owners/${o.id}"><strong>${esc(o.name || o.entity || 'Unnamed owner')}</strong></a>${o.age ? ` <span class="muted">· ${/^\d+$/.test(String(o.age)) ? 'Age ' : ''}${esc(o.age)}</span>` : ''}</div>
+  const crmAge = Ages.crmAgeNote(o);
+  const ageBit = crmAge ? ` <span class="muted">· ${esc(crmAge)}</span>` : (o.age ? ` <span class="muted">· ${/^\d+$/.test(String(o.age).trim()) ? 'Age ' : ''}${esc(o.age)}</span>` : '');
+  return `<div class="owner"><div class="o-head"><a href="/owners/${o.id}"><strong>${esc(o.name || o.entity || 'Unnamed owner')}</strong></a>${ageBit}</div>
   ${born ? `<div class="small">${esc(born)}</div>` : ''}
   ${o.name && o.entity ? `<div class="muted small">${esc(o.entity)}</div>` : ''}
   <div class="phones">${phones.map((p) => `<a class="call" href="${telHref(p)}">📞 ${esc(p)}</a>`).join('') || '<span class="muted small">No phone on file</span>'}</div>
@@ -311,9 +314,9 @@ function activityList(acts, withProp = false) {
 app.get('/properties/new', wrap(async (req, res) => {
   res.send(layout('New property', `<h1>New property</h1>${propertyForm({ status: 'New' }, await tenantList(), '/properties', req.query.tenant ? [String(req.query.tenant)] : [])}`, { active: 'properties' }));
 }));
-function propertyForm(p, tenants, action, selTenants = [], withOwner = true) {
+function propertyForm(p, tenants, action, selTenants = [], withOwner = true, extraHidden = '') {
   const v = (k) => esc(p[k]); const sel = new Set(selTenants.map(String));
-  return `<form method="post" action="${action}" class="form grid">
+  return `<form method="post" action="${action}" class="form grid">${extraHidden}
   <label class="wide">Building address<input name="address" value="${v('address')}" required></label>
   <label>City<input name="city" value="${v('city')}"></label>
   <label>State<input name="state" value="${esc(p.state || p.state_raw || '')}" maxlength="20" placeholder="FL"></label>
@@ -361,8 +364,47 @@ app.post('/properties', wrap(async (req, res) => {
   });
   res.redirect('/properties/' + id);
 }));
+function contextQuery(src) {
+  return { ...Nav.listFromQuery(src), ...Return.returnQuery(Return.returnFromQuery(src)) };
+}
 function listFields(f) {
-  return Nav.LIST_KEYS.filter((k) => f && f[k]).map((k) => `<input type="hidden" name="${esc(k)}" value="${esc(f[k])}">`).join('');
+  return [...Nav.LIST_KEYS, ...Return.KEYS].filter((k) => f && f[k] != null && String(f[k]) !== '').map((k) => `<input type="hidden" name="${esc(k)}" value="${esc(f[k])}">`).join('');
+}
+function dedupeIds(rows) {
+  const out = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const id = Number(r.id);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, address: r.address || '' });
+  }
+  return out;
+}
+async function callbackSection(ret) {
+  if (ret.from === 'cbdue') {
+    const { rows } = await listProps({ cb: 'due', sort: 'cbdesc' }, 2000);
+    return rows.map((r) => ({ id: r.id, address: r.address }));
+  }
+  if (ret.from === 'cbsoon') {
+    const soon = await db.query(`${PROP_SELECT} WHERE p.callback_date > $1::date AND p.callback_date <= $1::date + 14 ORDER BY p.callback_date`, [today()]);
+    return soon.map((r) => ({ id: r.id, address: r.address }));
+  }
+  if (ret.from === 'listings') {
+    const params = [];
+    let where = 'WHERE l.property_id IS NOT NULL';
+    if (ret.lst) { params.push(ret.lst); where += ' AND l.status=$1'; }
+    const rows = await db.query(`SELECT l.property_id AS id, COALESCE(p.address, l.address) AS address FROM listings l LEFT JOIN properties p ON p.id=l.property_id ${where} ORDER BY CASE l.status WHEN 'Active' THEN 0 WHEN 'Under contract' THEN 1 WHEN 'Sold' THEN 2 ELSE 3 END, l.updated_at DESC, l.id DESC`, params);
+    return dedupeIds(rows);
+  }
+  if (ret.from === 'buyer' && ret.bid) {
+    const Buyers = require('./buyers');
+    const [b] = await Buyers.loadBuyers(db, { id: ret.bid });
+    return dedupeIds((b && b.purchases || []).filter((c) => c.property_id).map((c) => ({ id: c.property_id, address: c.address })));
+  }
+  const { follow } = await followModel(ret.fu_state || '');
+  const rows = ret.from === 'cbhide' ? follow.excluded : follow.ranked;
+  return rows.map((r) => ({ id: r.propertyId, address: r.address }));
 }
 function propArrow(dir, row, f) {
   const label = dir === 'prev' ? 'Previous' : 'Next';
@@ -381,19 +423,31 @@ async function neighborNav(id, f) {
 app.get('/properties/:id', wrap(async (req, res) => {
   const p = await loadProperty(parseInt(req.params.id) || 0); if (!p) return res.status(404).send(layout('Not found', '<h1>Not found</h1>'));
   const list = Nav.listFromQuery(req.query);
-  const walk = await neighborNav(p.id, list);
+  const ret = Return.returnFromQuery(req.query);
+  const ordered = ret && Return.ORDERED.has(ret.from);
+  let walk;
+  if (ordered) {
+    const rows = await callbackSection(ret);
+    walk = Return.neighborsInCallbackList(rows, p.id, ret.cb_at);
+  } else walk = await neighborNav(p.id, list);
+  const keptAt = ordered ? (walk.fellOut ? ret.cb_at : walk.index) : null;
+  const pageQuery = { ...list, ...Return.returnQuery(ret ? { ...ret, cb_at: keptAt } : null) };
+  const prevQuery = ordered ? { ...list, ...Return.returnQuery({ ...ret, cb_at: walk.index - 1 }) } : pageQuery;
+  const nextQuery = ordered ? { ...list, ...Return.returnQuery({ ...ret, cb_at: walk.fellOut ? walk.index : walk.index + 1 }) } : pageQuery;
+  const backInfo = Return.backTarget(list, ret, ordered ? walk.anchorId : null);
   const facts = [['Tenancy', p.tenancy], ['RBA', p.rba ? numf(p.rba) + ' sf' : ''], ['Acres', numf(p.acres, 2)], ['Year built', p.year_built], ['Sale date', fmtDate(p.sale_date)], ['Price', money(p.price)], ['Cap rate', pct(p.cap_rate)], ['Last contacted', fmtDate(p.last_contacted)]].filter((x) => x[1]);
   const mapQ = encodeURIComponent([p.address, p.city, p.state, p.zip].filter(Boolean).join(', '));
   p._openComp = req.query.logcomp === '1'; const compsHtml = await comps.compsPanel(p);
   const compSaved = req.query.comp === 'sale' || req.query.comp === 'lease' ? `<p class="box ok">${req.query.comp === 'sale' ? 'Sale' : 'Lease'} comp saved.</p>` : '';
-  const hidden = listFields(list);
-  res.send(layout(p.address, `<p class="crumbs"><a href="/states/${esc(p.state || 'Unknown')}">${esc(p.state || p.state_raw || 'Unknown state')}</a> ›</p>
+  const hidden = listFields(pageQuery);
+  const back = backInfo ? `<a class="back-callbacks" href="${backInfo.href}">${esc(backInfo.label)}</a>` : '';
+  res.send(layout(p.address, `<p class="crumbs">${back ? back + ' · ' : ''}<a href="/states/${esc(p.state || 'Unknown')}">${esc(p.state || p.state_raw || 'Unknown state')}</a> ›</p>
   <div class="ph"><div><h1>${esc(p.address)}${newBadge(p)}</h1><p class="muted">${esc([p.city, p.state || p.state_raw, p.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p></div>
   <div class="ph-side"><div>${badge(p.status)} ${p.callback_date ? `<span class="${p.cb_due ? 'due' : 'muted'}">Callback ${fmtDate(p.callback_date)}</span>` : ''}</div>
-  <nav class="prop-nav" aria-label="Properties in this calling list">${propArrow('prev', walk.prev, list)}<span class="muted small">${walk.index >= 0 ? `${walk.index + 1} of ${walk.total}` : ''}</span>${propArrow('next', walk.next, list)}</nav>
-  ${walk.fellOut ? '<p class="muted small">This record no longer matches the list filter. Previous and next stay in that list order.</p>' : ''}</div></div>
+  <nav class="prop-nav" aria-label="Properties in this calling list">${propArrow('prev', walk.prev, prevQuery)}<span class="muted small">${walk.total ? `${Math.min(walk.index, walk.total - 1) + 1} of ${walk.total}` : ''}</span>${propArrow('next', walk.next, nextQuery)}</nav>
+  ${walk.fellOut ? `<p class="muted small">${ordered ? 'This record is no longer in that list. Previous and next use the neighboring rows.' : 'This record no longer matches the list filter. Previous and next stay in that list order.'}</p>` : ''}</div></div>
   <div class="chips">${p.tenants.map((t) => `<a href="/tenants/${t.id}">${esc(t.name)}</a>`).join('')}</div>
-  ${compSaved}<p class="actions"><a class="btn small" href="/properties/${p.id}${qs(list)}${qs(list) ? '&' : '?'}logcomp=1#comps">+ Log comp</a> <a class="btn ghost small" href="#comps">Comps</a></p>
+  ${compSaved}<p class="actions"><a class="btn small" href="/properties/${p.id}${qs(pageQuery)}${qs(pageQuery) ? '&' : '?'}logcomp=1#comps">+ Log comp</a> <a class="btn ghost small" href="#comps">Comps</a></p>
   <div class="cols"><section>
    <h2>Owner contacts</h2>${p.owners.map((o) => { o._listFields = hidden; return ownerCard(o, p.id); }).join('') || '<p class="muted">No owner linked.</p>'}
    <details class="box"><summary>+ Add / link owner</summary>
@@ -405,6 +459,7 @@ app.get('/properties/:id', wrap(async (req, res) => {
      <label class="wide">Mailing address<input name="mailing_address"></label><div class="wide"><button>Add owner</button></div></form></details>
   </section><section>
    <h2>Log a call</h2>
+   ${back ? `<p>${back}</p>` : ''}
    <form method="post" action="/properties/${p.id}/activities" class="form grid logcall">${hidden}
     <input type="hidden" name="kind" value="call">
     <label>Outcome<select name="outcome">${OUTCOMES.map((o) => `<option>${o}</option>`).join('')}</select></label>
@@ -423,15 +478,18 @@ app.get('/properties/:id', wrap(async (req, res) => {
   <h2>Property details</h2><dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('') || '<p class="muted">No details.</p>'}</dl>
   ${p.notes ? `<h2>Notes</h2><div class="pre box">${esc(p.notes)}</div>` : ''}
   <p class="muted small">Source: ${esc(p.source || '')}</p>
-  <p><a class="btn ghost" href="/properties/${p.id}/edit${qs(list)}">Edit property</a></p>
+  <p><a class="btn ghost" href="/properties/${p.id}/edit${qs(pageQuery)}">Edit property</a></p>
   ${await comps.areaCompsPanel(p)}`, { active: 'properties' }));
 }));
 app.get('/properties/:id/edit', wrap(async (req, res) => {
   const p = await loadProperty(parseInt(req.params.id) || 0); if (!p) return res.status(404).send('Not found');
-  const list = Nav.listFromQuery(req.query);
-  res.send(layout('Edit ' + p.address, `<p class="crumbs"><a href="/properties/${p.id}${qs(list)}">${esc(p.address)}</a> ›</p><h1>Edit property</h1>
-  ${propertyForm(p, await tenantList(), `/properties/${p.id}`, p.tenants.map((t) => t.id), false)}
-  <form method="post" action="/properties/${p.id}/delete" onsubmit="return confirm('Delete this property and its activity log? This cannot be undone.')">${listFields(list)}<button class="danger">Delete property</button></form>`, { active: 'properties' }));
+  const pageQuery = contextQuery(req.query);
+  const ret = Return.returnFromQuery(req.query);
+  const backInfo = Return.backTarget(Nav.listFromQuery(req.query), ret, p.id);
+  const back = backInfo ? `<a class="back-callbacks" href="${backInfo.href}">${esc(backInfo.label)}</a> · ` : '';
+  res.send(layout('Edit ' + p.address, `<p class="crumbs">${back}<a href="/properties/${p.id}${qs(pageQuery)}">${esc(p.address)}</a> ›</p><h1>Edit property</h1>
+  ${propertyForm(p, await tenantList(), `/properties/${p.id}`, p.tenants.map((t) => t.id), false, listFields(pageQuery))}
+  <form method="post" action="/properties/${p.id}/delete" onsubmit="return confirm('Delete this property and its activity log? This cannot be undone.')">${listFields(pageQuery)}<button class="danger">Delete property</button></form>`, { active: 'properties' }));
 }));
 app.post('/properties/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id);
@@ -441,7 +499,7 @@ app.post('/properties/:id', wrap(async (req, res) => {
     await setTenants(t, id, req.body);
     await saveCoords(t, id, req.body);
   });
-  res.redirect('/properties/' + id);
+  res.redirect('/properties/' + id + qs(contextQuery(req.body)));
 }));
 function saveCoords(t, id, b) {
   if (!b || (!Object.prototype.hasOwnProperty.call(b, 'lat') && !Object.prototype.hasOwnProperty.call(b, 'lng'))) return null;
@@ -452,6 +510,16 @@ function saveCoords(t, id, b) {
 app.post('/properties/:id/delete', wrap(async (req, res) => {
   const id = parseInt(req.params.id);
   const list = Nav.listFromQuery(req.body);
+  const ret = Return.returnFromQuery(req.body);
+  if (ret) {
+    const rows = await callbackSection(ret);
+    const walk = Return.neighborsInCallbackList(rows, id, ret.cb_at);
+    const target = Nav.recordAfterDelete(walk);
+    await db.query('DELETE FROM properties WHERE id=$1', [id]);
+    if (!target) return res.redirect(Return.listUrl({ ...ret, cb_at: null }, null));
+    const at = walk.next && Number(target.id) === Number(walk.next.id) ? walk.index : Math.max(0, walk.index - 1);
+    return res.redirect(`/properties/${target.id}${qs({ ...list, ...Return.returnQuery({ ...ret, cb_at: at }) })}`);
+  }
   const walk = await neighborNav(id, list);
   const target = Nav.recordAfterDelete(walk);
   await db.query('DELETE FROM properties WHERE id=$1', [id]);
@@ -474,13 +542,18 @@ app.post('/properties/:id/activities', wrap(async (req, res) => {
         [id, date, newStatus || null, cb, b.clear_cb === '1']);
     } else await t.query('UPDATE properties SET updated_at=now() WHERE id=$1', [id]);
   });
-  const listQs = qs(Nav.listFromQuery(b));
-  if (kind === 'call' && b.log_comp === '1') return res.redirect(`/comps/log?property_id=${id}&from=call${listQs ? '&' + listQs.slice(1) : ''}`);
-  res.redirect('/properties/' + id + listQs);
+  const saved = contextQuery(b);
+  if (kind === 'call' && b.log_comp === '1') {
+    const extra = { ...saved };
+    delete extra.from;
+    const listQs = qs(extra);
+    return res.redirect(`/comps/log?property_id=${id}&from=call${listQs ? '&' + listQs.slice(1) : ''}`);
+  }
+  res.redirect('/properties/' + id + qs(saved));
 }));
 app.post('/properties/:id/owners', wrap(async (req, res) => {
   const id = parseInt(req.params.id); const b = req.body;
-  const listQs = qs(Nav.listFromQuery(b));
+  const listQs = qs(contextQuery(b));
   if (nz(b.existing_q) && !nz(b.name) && !nz(b.entity)) return res.redirect(`/properties/${id}/link-owner?q=${encodeURIComponent(b.existing_q)}`);
   if (!nz(b.name) && !nz(b.entity)) return res.redirect('/properties/' + id + listQs);
   await db.tx(async (t) => {
@@ -498,7 +571,7 @@ app.get('/properties/:id/link-owner', wrap(async (req, res) => {
   <ul class="acts">${owners.map((o) => `<li><form method="post" action="/properties/${id}/owners/${o.id}/link" class="inline"><button>Link</button></form> <b>${esc(o.name || '')}</b> <span class="muted">${esc(o.entity || '')} ${esc(o.phone1 || '')}</span></li>`).join('') || '<li class="muted">No matches.</li>'}</ul>`));
 }));
 app.post('/properties/:id/owners/:oid/link', wrap(async (req, res) => { await db.query('INSERT INTO property_owners VALUES ($1,$2) ON CONFLICT DO NOTHING', [parseInt(req.params.id), parseInt(req.params.oid)]); res.redirect('/properties/' + parseInt(req.params.id)); }));
-app.post('/properties/:id/owners/:oid/unlink', wrap(async (req, res) => { await db.query('DELETE FROM property_owners WHERE property_id=$1 AND owner_id=$2', [parseInt(req.params.id), parseInt(req.params.oid)]); res.redirect('/properties/' + parseInt(req.params.id) + qs(Nav.listFromQuery(req.body))); }));
+app.post('/properties/:id/owners/:oid/unlink', wrap(async (req, res) => { await db.query('DELETE FROM property_owners WHERE property_id=$1 AND owner_id=$2', [parseInt(req.params.id), parseInt(req.params.oid)]); res.redirect('/properties/' + parseInt(req.params.id) + qs(contextQuery(req.body))); }));
 
 // ---------- owners ----------
 app.get('/owners', wrap(async (req, res) => {
@@ -583,7 +656,7 @@ app.get('/calls', wrap(async (req, res) => {
   const todayN = typeof res.locals.callsToday === 'number' ? res.locals.callsToday : await Calls.todayCount(db);
   const ranges = [30, 90, 365].map((d) => `<a href="/calls?days=${d}" class="${d === days ? 'on' : ''}">${d} days</a>`).join(' · ');
   res.send(layout('Call activity', `<h1>Call activity</h1>
-  <p class="muted">Voicemails, texts, and conversations count; no-answers and wrong numbers do not. Days are Eastern Time (${esc(Calls.TZ)}).</p>
+  <p class="muted">Every logged call counts, including no-answer and wrong number, from Properties or Callbacks. Notes do not. Days are Eastern Time (${esc(Calls.TZ)}).</p>
   <p class="calls-ranges">${ranges}</p>
   <p><b>${esc(Calls.label(todayN))}</b> · <b>${total.toLocaleString('en-US')}</b> in the last ${days} days</p>
   <div class="calls-chart">${Calls.svgChart(series)}</div>

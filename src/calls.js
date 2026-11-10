@@ -1,12 +1,15 @@
 // Call activity counts for the header badge and /calls chart.
-// A "call" is a voicemail or conversation (see CALL_WHERE). Days are America/New_York.
+// Every logged call counts, whatever page it was saved from. Days are America/New_York.
 const { AsyncLocalStorage } = require('async_hooks');
 const store = new AsyncLocalStorage();
 
 const TZ = 'America/New_York';
-// Voicemails, texts, and conversations. Excludes No answer, Wrong number, notes, Callback set, import Called, etc.
+// kind = 'call' is the only logged-call row (Properties and Callbacks both use that insert).
+// Attempts (No answer, Wrong number, voicemail, text) and completed conversations all count.
+// Notes do not. Imported Talked rows are past conversations and count on their activity date.
+// Imported Called rows are spreadsheet last-contacted dates, not logged calls.
 const CALL_WHERE = `(
-  (kind = 'call' AND outcome IN ('Left voicemail', 'Texted', 'Talked', 'Interested', 'Not interested', 'Do not call'))
+  kind = 'call'
   OR (kind = 'import' AND outcome = 'Talked')
 )`;
 const CALL_DAY = `COALESCE(activity_date, (created_at AT TIME ZONE '${TZ}')::date)`;
