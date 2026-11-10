@@ -15,7 +15,8 @@
     "import:reset": "node scripts/import.js --reset",
     "seed:comps": "python3 scripts/extract_sale_comps.py && node scripts/seed_sale_comps.js",
     "fetch:sales": "node scripts/fetch_public_sales.js",
-    "import:comps": "node scripts/import_comps_csv.js"
+    "import:comps": "node scripts/import_comps_csv.js",
+    "import:ages": "node scripts/import_owner_ages.js"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.15",

@@ -62,6 +62,9 @@ CREATE INDEX IF NOT EXISTS idx_po_owner ON property_owners(owner_id);
 CREATE INDEX IF NOT EXISTS idx_pt_tenant ON property_tenants(tenant_id);
 ALTER TABLE properties ADD COLUMN IF NOT EXISTS lat NUMERIC;
 ALTER TABLE properties ADD COLUMN IF NOT EXISTS lng NUMERIC;
+ALTER TABLE owners ADD COLUMN IF NOT EXISTS birth_year INT;
+ALTER TABLE owners ADD COLUMN IF NOT EXISTS age_source TEXT;
+ALTER TABLE owners ADD COLUMN IF NOT EXISTS age_confidence TEXT;
 CREATE TABLE IF NOT EXISTS attachments (
   id SERIAL PRIMARY KEY,
   kind TEXT NOT NULL,

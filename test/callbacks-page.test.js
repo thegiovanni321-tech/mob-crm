@@ -45,25 +45,33 @@ test('callbacks page keeps scheduled lists and shows a stale talk plus a negated
     await post(cookie, `/properties/${id}/activities`, {
       kind: 'call', outcome: 'Talked', owner_id: owner, activity_date: '2020-01-15', notes: 'She is interested in selling. Not a voicemail.',
     });
+    await post(cookie, `/owners/${owner}`, { name: 'Ada Sample', entity: 'Sample Holdings', birth_year: '1948', age_source: 'Nexis', age_confidence: 'high' });
+    const record = await (await fetch(`${BASE}/properties/${id}`, { headers: { cookie } })).text();
+    assert.match(record, /Born 1948/);
+    assert.match(record, /Nexis/);
+    assert.match(record, /high confidence/);
     const html = await (await fetch(BASE + '/callbacks', { headers: { cookie } })).text();
     assert.match(html, /Due or overdue/);
     assert.match(html, /Next 14 days/);
-    assert.match(html, /Haven't talked in 6 months/);
-    assert.match(html, /Missed follow-ups/);
+    assert.match(html, /Most likely to sell/);
+    assert.doesNotMatch(html, /Excluded by negation/);
     assert.match(html, /Ada Sample/);
     assert.match(html, /Sample Holdings/);
     assert.match(html, /9 Synthetic Followup/);
     assert.match(html, /interested in selling/);
+    assert.match(html, /Age 78/);
     const negLoc = await post(cookie, '/properties', { address: '8 Synthetic Never', city: 'Sampleville', state: 'FL', status: 'New', o_name: 'Bea Sample', o_entity: 'Bea LLC' });
     const id2 = negLoc.match(/\/properties\/(\d+)/)[1];
     const page2 = await (await fetch(`${BASE}/properties/${id2}`, { headers: { cookie } })).text();
     const owner2 = page2.match(/name="owner_id"[\s\S]*?<option value="(\d+)">/)[1];
     await post(cookie, `/properties/${id2}/activities`, { kind: 'call', outcome: 'Talked', owner_id: owner2, activity_date: '2020-02-01', notes: 'They are not selling.' });
     const html2 = await (await fetch(BASE + '/callbacks', { headers: { cookie } })).text();
-    assert.match(html2, /Excluded by negation/);
-    assert.match(html2, /not selling/);
-    const missedBlock = html2.split('id="missed"')[1] || '';
-    assert.doesNotMatch(missedBlock.split('Excluded by negation')[0], /8 Synthetic Never/);
+    assert.doesNotMatch(html2, /8 Synthetic Never/);
+    assert.doesNotMatch(html2, /Bea Sample/);
+    assert.match(html2, /clearly not selling, hidden/);
+    const hidden = await (await fetch(BASE + '/callbacks/not-selling', { headers: { cookie } })).text();
+    assert.match(hidden, /8 Synthetic Never/);
+    assert.match(hidden, /not selling/);
   } finally {
     child.kill('SIGTERM');
   }

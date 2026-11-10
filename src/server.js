@@ -6,6 +6,7 @@ const { esc, layout, propertyRows, filterForm, badge, newBadge, fmtDate, isoDate
 const { IS_NEW_SQL } = require('./property-flags');
 const Nav = require('./property-nav');
 const Follow = require('./followups');
+const Ages = require('./owner-ages');
 const TZ = process.env.TZ_NAME || 'America/New_York';
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const plusDays = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -225,26 +226,56 @@ function ownerRows(owners) {
   return `<div class="list">${owners.map((o) => `<a class="row" href="/owners/${o.id}"><div class="r-main"><strong>${esc(o.name || o.entity || 'Unnamed')}</strong><span class="muted">${esc(o.name ? o.entity : '')}</span></div>
   <div class="r-meta"><span>${esc(o.phone1 || '')}</span><span class="muted small">${esc(firstEmail(o.email))}</span></div><div class="r-side"><span class="small muted">${o.n} propert${o.n === 1 ? 'y' : 'ies'}</span></div></a>`).join('')}</div>`;
 }
-app.get('/callbacks', wrap(async (req, res) => {
+async function followModel(fuState) {
   const t = today();
-  const due = await listProps({ cb: 'due', sort: 'cbdesc' }, 2000);
-  const soon = await db.query(`${PROP_SELECT} WHERE p.callback_date > $1::date AND p.callback_date <= $1::date + 14 ORDER BY p.callback_date`, [t]);
-  const fuState = (nz(req.query.fu_state) || '').toUpperCase();
-  const fuProps = await db.query('SELECT id, address, city, state, status, last_contacted, callback_date, notes FROM properties');
+  const fuProps = await db.query('SELECT id, address, city, state, status, last_contacted, callback_date, notes, sale_date, tenancy FROM properties');
   const fuActs = await db.query('SELECT id, property_id, owner_id, kind, outcome, notes, activity_date FROM activities');
-  const fuOwners = await db.query('SELECT po.property_id, o.id, o.name, o.entity FROM property_owners po JOIN owners o ON o.id = po.owner_id ORDER BY o.id');
+  const fuOwners = await db.query('SELECT po.property_id, o.id, o.name, o.entity, o.age, o.notes, o.mailing_address, o.birth_year, o.age_source, o.age_confidence FROM property_owners po JOIN owners o ON o.id = po.owner_id ORDER BY o.id');
+  const fuLeases = await db.query('SELECT property_id, expiration_date, start_date, term_months FROM lease_comps WHERE property_id IS NOT NULL');
+  const fuListings = await db.query('SELECT property_id, lease_expiration, years_remaining FROM listings WHERE property_id IS NOT NULL');
   const ownersOf = new Map();
   for (const o of fuOwners) {
     if (!ownersOf.has(o.property_id)) ownersOf.set(o.property_id, []);
     ownersOf.get(o.property_id).push(o);
   }
-  for (const p of fuProps) p.owners = ownersOf.get(p.id) || [];
-  const follow = Follow.buildFollowUps({ today: t, properties: fuProps, activities: fuActs, state: fuState });
-  const fuStates = [...new Set(fuProps.map((p) => p.state).filter(Boolean))].sort();
+  for (const p of fuProps) {
+    p.owners = ownersOf.get(p.id) || [];
+    let exp = '';
+    let years = null;
+    for (const l of fuLeases) {
+      if (l.property_id !== p.id) continue;
+      let e = l.expiration_date ? String(l.expiration_date).slice(0, 10) : '';
+      if (!e && l.start_date && l.term_months) e = plusDays(String(l.start_date).slice(0, 10), Math.round(Number(l.term_months) * 30.4375));
+      if (e && (!exp || e < exp)) exp = e;
+    }
+    for (const l of fuListings) {
+      if (l.property_id !== p.id) continue;
+      const e = l.lease_expiration ? String(l.lease_expiration).slice(0, 10) : '';
+      if (e && (!exp || e < exp)) exp = e;
+      if (l.years_remaining != null && l.years_remaining !== '' && (years == null || Number(l.years_remaining) < years)) years = Number(l.years_remaining);
+    }
+    p.leaseExpiration = exp;
+    p.yearsRemaining = years;
+  }
+  const states = [...new Set(fuProps.map((p) => p.state).filter(Boolean))].sort();
+  return { t, states, follow: Follow.buildFollowUps({ today: t, properties: fuProps, activities: fuActs, state: fuState }) };
+}
+app.get('/callbacks/not-selling', wrap(async (req, res) => {
+  const fuState = (nz(req.query.fu_state) || '').toUpperCase();
+  const { follow, states } = await followModel(fuState);
+  res.send(layout('Not selling', `<h1>Not selling</h1><p class="muted"><a href="/callbacks">Back to Callbacks</a></p>
+  ${Follow.renderNotSelling(follow, { state: fuState, states })}`, { active: 'callbacks' }));
+}));
+app.get('/callbacks', wrap(async (req, res) => {
+  const t = today();
+  const due = await listProps({ cb: 'due', sort: 'cbdesc' }, 2000);
+  const soon = await db.query(`${PROP_SELECT} WHERE p.callback_date > $1::date AND p.callback_date <= $1::date + 14 ORDER BY p.callback_date`, [t]);
+  const fuState = (nz(req.query.fu_state) || '').toUpperCase();
+  const { follow, states } = await followModel(fuState);
   res.send(layout('Callbacks', `<h1>Callbacks</h1><p class="muted">Today is ${fmtDate(t)} (${esc(TZ)}). Scheduled callbacks below are only dates set when a call was logged. Imported spreadsheet callback dates stay last-contacted and are not listed here.</p>
   <h2 id="due">Due or overdue <span class="muted">(${due.n}, most recent first)</span></h2>${propertyRows(due.rows, { list: { cb: 'due', sort: 'cbdesc' } })}
   <h2 id="soon">Next 14 days <span class="muted">(${soon.length})</span></h2>${propertyRows(soon, { list: { cb: 'upcoming', sort: 'cb' } })}
-  ${Follow.renderFollowUps(follow, { state: fuState, states: fuStates })}`, { active: 'callbacks' }));
+  ${Follow.renderFollowUps(follow, { state: fuState, states })}`, { active: 'callbacks' }));
 }));
 
 // ---------- property detail / edit ----------
@@ -260,7 +291,9 @@ function ownerCard(o, pid) {
   const phones = [o.phone1, o.phone2, o.phone3, o.phone4, o.phone5].filter(Boolean);
   const em = firstEmail(o.email);
   const web = o.website ? (/^https?:/i.test(o.website) ? o.website : 'https://' + o.website) : '';
-  return `<div class="owner"><div class="o-head"><a href="/owners/${o.id}"><strong>${esc(o.name || o.entity || 'Unnamed owner')}</strong></a>${o.age ? ` <span class="muted">· ${/^\d+$/.test(o.age) ? 'Age ' : ''}${esc(o.age)}</span>` : ''}</div>
+  const born = Ages.ageLabel(o, today());
+  return `<div class="owner"><div class="o-head"><a href="/owners/${o.id}"><strong>${esc(o.name || o.entity || 'Unnamed owner')}</strong></a>${o.age ? ` <span class="muted">· ${/^\d+$/.test(String(o.age)) ? 'Age ' : ''}${esc(o.age)}</span>` : ''}</div>
+  ${born ? `<div class="small">${esc(born)}</div>` : ''}
   ${o.name && o.entity ? `<div class="muted small">${esc(o.entity)}</div>` : ''}
   <div class="phones">${phones.map((p) => `<a class="call" href="${telHref(p)}">📞 ${esc(p)}</a>`).join('') || '<span class="muted small">No phone on file</span>'}</div>
   ${em ? `<div><a href="mailto:${esc(em)}">✉️ ${esc(o.email)}</a></div>` : o.email ? `<div class="small">✉️ ${esc(o.email)}</div>` : ''}
@@ -481,17 +514,21 @@ app.get('/owners', wrap(async (req, res) => {
 function ownerForm(o, action, back) {
   const v = (k) => esc(o[k]);
   return `<form method="post" action="${action}" class="form grid"><input type="hidden" name="back" value="${esc(back || '')}">
-  <label>Owner name<input name="name" value="${v('name')}"></label><label>Entity (owner of record)<input name="entity" value="${v('entity')}"></label><label>Age<input name="age" value="${v('age')}"></label>
+  <label>Owner name<input name="name" value="${v('name')}"></label><label>Entity (owner of record)<input name="entity" value="${v('entity')}"></label><label>Age note<input name="age" value="${v('age')}"></label>
+  <label>Birth year<input name="birth_year" inputmode="numeric" value="${v('birth_year')}"></label><label>Age source<input name="age_source" value="${v('age_source')}"></label>
+  <label>Age confidence<select name="age_confidence"><option value="">—</option>${['high', 'medium', 'low'].map((c) => `<option${o.age_confidence === c ? ' selected' : ''}>${c}</option>`).join('')}</select></label>
   ${[1, 2, 3, 4, 5].map((i) => `<label>Phone ${i}<input type="tel" name="phone${i}" value="${v('phone' + i)}"></label>`).join('')}
   <label>Email<input name="email" value="${v('email')}"></label><label>Website<input name="website" value="${v('website')}"></label>
   <label class="wide">Owner mailing address<input name="mailing_address" value="${v('mailing_address')}"></label>
   <label class="wide">Notes<textarea name="notes" rows="3">${v('notes')}</textarea></label><div class="wide"><button>Save</button></div></form>`;
 }
-const ownerVals = (b) => [nz(b.name), nz(b.entity), nz(b.age), nz(b.phone1), nz(b.phone2), nz(b.phone3), nz(b.phone4), nz(b.phone5), nz(b.email), nz(b.website), nz(b.mailing_address), nz(b.notes)];
+const nyear = (v) => { const n = Number(nz(v)); return Number.isInteger(n) && n >= 1900 && n <= 2100 ? n : null; };
+const nconf = (v) => { const s = (nz(v) || '').toLowerCase(); return s === 'high' || s === 'medium' || s === 'low' ? s : null; };
+const ownerVals = (b) => [nz(b.name), nz(b.entity), nz(b.age), nyear(b.birth_year), nz(b.age_source), nconf(b.age_confidence), nz(b.phone1), nz(b.phone2), nz(b.phone3), nz(b.phone4), nz(b.phone5), nz(b.email), nz(b.website), nz(b.mailing_address), nz(b.notes)];
 const safeBack = (b) => (typeof b === 'string' && /^\/[a-z]/.test(b) ? b : null);
 app.get('/owners/new', (req, res) => res.send(layout('New owner', `<h1>New owner</h1>${ownerForm({}, '/owners')}`, { active: 'owners' })));
 app.post('/owners', wrap(async (req, res) => {
-  const [o] = await db.query('INSERT INTO owners (name, entity, age, phone1, phone2, phone3, phone4, phone5, email, website, mailing_address, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id', ownerVals(req.body));
+  const [o] = await db.query('INSERT INTO owners (name, entity, age, birth_year, age_source, age_confidence, phone1, phone2, phone3, phone4, phone5, email, website, mailing_address, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id', ownerVals(req.body));
   res.redirect('/owners/' + o.id);
 }));
 app.get('/owners/:id', wrap(async (req, res) => {
@@ -509,7 +546,7 @@ app.get('/owners/:id/edit', wrap(async (req, res) => {
 }));
 app.post('/owners/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id);
-  await db.query('UPDATE owners SET name=$1, entity=$2, age=$3, phone1=$4, phone2=$5, phone3=$6, phone4=$7, phone5=$8, email=$9, website=$10, mailing_address=$11, notes=$12, updated_at=now() WHERE id=$13', [...ownerVals(req.body), id]);
+  await db.query('UPDATE owners SET name=$1, entity=$2, age=$3, birth_year=$4, age_source=$5, age_confidence=$6, phone1=$7, phone2=$8, phone3=$9, phone4=$10, phone5=$11, email=$12, website=$13, mailing_address=$14, notes=$15, updated_at=now() WHERE id=$16', [...ownerVals(req.body), id]);
   res.redirect(safeBack(req.body.back) || '/owners/' + id);
 }));
 app.post('/owners/:id/delete', wrap(async (req, res) => { await db.query('DELETE FROM owners WHERE id=$1', [parseInt(req.params.id)]); res.redirect('/owners'); }));
@@ -527,11 +564,11 @@ app.get('/export.csv', wrap(async (req, res) => {
   const f = pick(req.query); const { where, params } = buildFilter(f);
   const rows = await db.query(`SELECT p.id, (SELECT string_agg(t.name, '; ' ORDER BY t.name) FROM property_tenants pt JOIN tenants t ON t.id=pt.tenant_id WHERE pt.property_id=p.id) tenants,
     p.tenancy, p.address, p.city, COALESCE(p.state, p.state_raw) state, p.zip, p.status, p.last_contacted, p.callback_date,
-    o.entity, o.name owner, o.age, o.phone1, o.phone2, o.phone3, o.phone4, o.phone5, o.email, o.website, o.mailing_address,
+    o.entity, o.name owner, o.age, o.birth_year, o.age_source, o.age_confidence, o.phone1, o.phone2, o.phone3, o.phone4, o.phone5, o.email, o.website, o.mailing_address,
     p.cap_rate, p.sale_date, p.price, p.rba, p.acres, p.year_built, p.notes
     FROM properties p LEFT JOIN property_owners po ON po.property_id=p.id LEFT JOIN owners o ON o.id=po.owner_id ${where}
     ORDER BY p.state NULLS LAST, p.city, p.address, o.id`, params);
-  const cols = ['id', 'tenants', 'tenancy', 'address', 'city', 'state', 'zip', 'status', 'last_contacted', 'callback_date', 'entity', 'owner', 'age', 'phone1', 'phone2', 'phone3', 'phone4', 'phone5', 'email', 'website', 'mailing_address', 'cap_rate', 'sale_date', 'price', 'rba', 'acres', 'year_built', 'notes'];
+  const cols = ['id', 'tenants', 'tenancy', 'address', 'city', 'state', 'zip', 'status', 'last_contacted', 'callback_date', 'entity', 'owner', 'age', 'birth_year', 'age_source', 'age_confidence', 'phone1', 'phone2', 'phone3', 'phone4', 'phone5', 'email', 'website', 'mailing_address', 'cap_rate', 'sale_date', 'price', 'rba', 'acres', 'year_built', 'notes'];
   const cell = (v) => { const s = v === null || v === undefined ? '' : String(v); return /[",\n\r]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; };
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="crm-export-${today()}.csv"`);

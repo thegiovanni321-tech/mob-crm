@@ -24,6 +24,7 @@ const EXPLICIT_NEG = [
   /\b(?:won['’]t|wont|will not|wouldn['’]t|wouldnt|would not)\s+sell\b/gi,
   /\b(?:do not|don['’]t|dont|does not|doesn['’]t|doesnt|never)\s+call\s*back\b/gi,
   /\bno need to call\s*back\b/gi,
+  /\bnot interested\b/gi,
 ];
 const SELL = [
   { re: /\binterested in selling\b/gi },
@@ -182,9 +183,8 @@ function classifyText(raw) {
     covered.push([hit.index, hit.index + hit.length]);
   }
   const blank = blankRanges(text, covered);
-  const sell = kept[0]
-    ? { phrase: sellLabel(kept[0].matched), snippet: snippet(text, kept[0].index, kept[0].length), matched: kept[0].matched }
-    : null;
+  const sells = kept.map((hit) => ({ phrase: sellLabel(hit.matched), snippet: snippet(text, hit.index, hit.length), matched: hit.matched }));
+  const sell = sells[0] || null;
   let later = null;
   for (const spec of LATER) {
     const m = new RegExp(spec.re.source, spec.re.ignoreCase ? 'i' : '').exec(blank);
@@ -200,7 +200,7 @@ function classifyText(raw) {
     };
     break;
   }
-  return { sell, later, excluded };
+  return { sell, sells, later, excluded };
 }
 function isTalk(a) {
   if (a.kind === 'call' && TALK_CALL.has(a.outcome)) return true;
@@ -212,6 +212,106 @@ function ownerOf(property, ownerId) {
   return owners.find((o) => Number(o.id) === Number(ownerId)) || owners[0] || null;
 }
 
+const { STATE_NAMES } = require('./views');
+const SIGNALS = {
+  sell: 100,
+  valuation: 90,
+  sellYearsPending: 75,
+  callbackDue: 60,
+  callbackUndated: 50,
+  age75: 45,
+  age75Step: 1,
+  age75Cap: 10,
+  age65: 30,
+  age65Step: 1,
+  age65Cap: 9,
+  retirement: 35,
+  longHold: 25,
+  holdYears: 10,
+  leaseSoon: 25,
+  leaseMonths: 18,
+  hospital: 25,
+  vacancy: 20,
+  relocation: 20,
+  estate: 20,
+  outOfState: 15,
+  stale: 10,
+  ageFloor: 65,
+  ageHigh: 75,
+};
+const RETIRE = [
+  { re: /\bretiring\b/i, label: 'Retiring' },
+  { re: /\bretirement\b/i, label: 'Retirement' },
+  { re: /\bretired\b/i, label: 'Retired' },
+  { re: /\bolder doctor\b/i, label: 'Older doctor' },
+  { re: /\bwinding down\b/i, label: 'Winding down' },
+  { re: /\bsuccession\b/i, label: 'Succession' },
+  { re: /\bhealth\b(?!\s*(?:care|system))/i, label: 'Health' },
+  { re: /\bpassed away\b/i, label: 'Passed away' },
+  { re: /\bheirs?\b/i, label: 'Heirs' },
+  { re: /\b(?<!real\s)estate\b/i, label: 'Estate' },
+];
+
+function sellWeight(phrase, talkDate, today) {
+  const years = String(phrase).match(/\bsell in (\d+) years?\b/i);
+  if (years) {
+    const due = addMonths(talkDate, Number(years[1]) * 12);
+    if (due <= today) return { points: SIGNALS.sell, label: `${phrase} (timeframe reached)` };
+    return { points: SIGNALS.sellYearsPending, label: `${phrase} (timeframe ${due})` };
+  }
+  if (/\b(bov|valuation)\b/i.test(phrase)) return { points: SIGNALS.valuation, label: phrase };
+  return { points: SIGNALS.sell, label: phrase };
+}
+function noteStance(text, outcome) {
+  const found = classifyText(text || '');
+  const positive = found.sell || null;
+  const negated = !positive && (found.excluded.length > 0 || outcome === 'Not interested');
+  return { positive, sells: found.sells || (positive ? [positive] : []), later: found.later, negated, excluded: found.excluded };
+}
+function qualifyingAge(owner, today) {
+  const year = Number(owner && owner.birth_year);
+  const conf = String((owner && owner.age_confidence) || '').trim().toLowerCase();
+  const now = Number(String(today).slice(0, 4));
+  if (!Number.isInteger(year) || year < 1900 || year > now - 18) return null;
+  if (conf !== 'high' && conf !== 'medium') return null;
+  const age = now - year;
+  if (age < SIGNALS.ageFloor) return null;
+  const points = age >= SIGNALS.ageHigh
+    ? SIGNALS.age75 + Math.min(age - SIGNALS.ageHigh, SIGNALS.age75Cap)
+    : SIGNALS.age65 + Math.min(age - SIGNALS.ageFloor, SIGNALS.age65Cap);
+  const source = owner.age_source ? `, ${owner.age_source}` : '';
+  return { points, label: `Age ${age} (born ${year}${source}, ${conf})`, age };
+}
+function retirementHit(text) {
+  const src = normalizeNote(text);
+  for (const spec of RETIRE) {
+    const m = spec.re.exec(src);
+    if (!m) continue;
+    if (negationBefore(src, m.index)) continue;
+    return { label: spec.label, snippet: snippet(src, m.index, m[0].length) };
+  }
+  return null;
+}
+function mailingState(addr) {
+  const up = String(addr || '').toUpperCase();
+  const m = up.match(/\b([A-Z]{2})\s+\d{5}(?:-\d{4})?\b/) || up.match(/,\s*([A-Z]{2})\s*$/);
+  return m && STATE_NAMES[m[1]] ? m[1] : '';
+}
+function isEstateOwner(owner) {
+  const raw = `${owner.name || ''} ${owner.entity || ''}`;
+  const stripped = raw.replace(/\breal estate\b/ig, ' ');
+  return /\b(trust|trustee|estate of|heirs?)\b/i.test(stripped) || /\bestate\b/i.test(stripped);
+}
+function leaseIsSoon(property, today) {
+  const exp = iso(property.leaseExpiration || property.lease_expiration);
+  if (exp) {
+    const until = daysBetween(exp, today);
+    if (until !== null && until <= SIGNALS.leaseMonths * 30 && until >= -90) return true;
+  }
+  const years = property.yearsRemaining;
+  return years !== null && years !== undefined && years !== '' && Number(years) >= 0 && Number(years) <= SIGNALS.leaseMonths / 12;
+}
+
 function buildFollowUps({ today, properties, activities, state }) {
   const want = (state || '').trim().toUpperCase();
   const byId = new Map();
@@ -220,8 +320,7 @@ function buildFollowUps({ today, properties, activities, state }) {
     const p = byId.get(a.property_id);
     if (p) p.activities.push(a);
   }
-  const stale = [];
-  const missed = [];
+  const ranked = [];
   const excluded = [];
   for (const p of byId.values()) {
     if (want && String(p.state || '').toUpperCase() !== want) continue;
@@ -232,83 +331,171 @@ function buildFollowUps({ today, properties, activities, state }) {
     const talks = [];
     for (const a of p.activities) {
       if (!isTalk(a) || !iso(a.activity_date)) continue;
-      talks.push({ date: iso(a.activity_date), owner_id: a.owner_id, notes: a.notes || '', id: a.id });
+      talks.push({ date: iso(a.activity_date), owner_id: a.owner_id, notes: a.notes || '', outcome: a.outcome || '', id: a.id });
     }
     if (!talks.length && p.last_contacted && (p.status === 'Talked' || p.status === 'Interested')) {
-      talks.push({ date: iso(p.last_contacted), owner_id: null, notes: '', id: 0, fromLastContacted: true });
+      talks.push({ date: iso(p.last_contacted), owner_id: null, notes: '', outcome: '', id: 0, fromLastContacted: true });
     }
     if (!talks.length) continue;
     talks.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
     const latest = talks[0];
-    const laterCall = calls.some((a) => iso(a.activity_date) > latest.date);
     const futureCallback = iso(p.callback_date) && iso(p.callback_date) > today;
+    const lastContact = calls[0] ? iso(calls[0].activity_date) : latest.date;
     const days = daysBetween(today, latest.date);
+    const contactDays = daysBetween(today, lastContact);
     const owner = ownerOf(p, latest.owner_id);
-    if (!laterCall && !futureCallback && days !== null && days > STALE_DAYS) {
-      const note = latest.notes || p.notes || '';
-      stale.push({
-        propertyId: p.id, address: p.address, city: p.city, state: p.state,
-        ownerName: owner ? (owner.name || '') : '', ownerEntity: owner ? (owner.entity || '') : '',
-        lastTalked: latest.date, daysSince: days,
-        snippet: String(note).replace(/\s+/g, ' ').trim().slice(0, 140),
-      });
+    const chronological = [...talks].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id));
+    let positive = null;
+    let laterHit = null;
+    let negated = false;
+    let whyList = [];
+    for (const t of chronological) {
+      const stance = noteStance(t.notes, t.outcome);
+      if (stance.positive) {
+        positive = { sells: stance.sells, date: t.date, snippet: stance.positive.snippet };
+        laterHit = stance.later ? { ...stance.later, date: t.date } : laterHit;
+        negated = false;
+        whyList = [];
+      } else if (stance.negated) {
+        positive = null;
+        laterHit = null;
+        negated = true;
+        whyList = stance.excluded.length ? stance.excluded : [{ phrase: t.outcome === 'Not interested' ? 'Not interested' : 'not selling', snippet: t.notes || t.outcome || '' }];
+      } else if (stance.later) laterHit = { ...stance.later, date: t.date };
     }
-    const texts = talks.map((t) => ({ date: t.date, notes: t.notes, owner_id: t.owner_id }));
-    if (p.notes) texts.push({ date: latest.date, notes: p.notes, owner_id: latest.owner_id, propertyNotes: true });
-    let best = null;
-    for (const t of texts) {
-      const found = classifyText(t.notes);
-      for (const ex of found.excluded) {
-        excluded.push({ propertyId: p.id, address: p.address, state: p.state, phrase: ex.phrase, snippet: ex.snippet, date: t.date });
+    const fileNotes = [p.notes, ...(p.owners || []).map((o) => o.notes)].filter(Boolean).join('\n');
+    const file = noteStance(fileNotes, '');
+    const latestStance = noteStance(latest.notes, latest.outcome);
+    if (file.negated && !latestStance.positive) {
+      negated = true;
+      positive = null;
+      laterHit = null;
+      if (file.excluded.length) whyList = file.excluded;
+    } else if (file.positive && !latestStance.negated && !positive) {
+      positive = { sells: file.sells, date: latest.date, snippet: file.positive.snippet };
+      negated = false;
+    }
+    if (p.status === 'Not interested' && !latestStance.positive && !(file.positive && !latestStance.negated)) {
+      negated = true;
+      positive = null;
+      laterHit = null;
+      if (!whyList.length) whyList = [{ phrase: 'Not interested', snippet: fileNotes || latest.notes || '' }];
+    }
+    if (positive && calls.some((c) => iso(c.activity_date) > positive.date)) positive = null;
+    if (laterHit && calls.some((c) => iso(c.activity_date) > laterHit.date)) laterHit = null;
+    if (negated) {
+      const reasons = whyList.length ? whyList : [{ phrase: 'not selling', snippet: '' }];
+      for (const reason of reasons) {
+        excluded.push({
+          propertyId: p.id, address: p.address, city: p.city, state: p.state,
+          ownerName: owner ? (owner.name || '') : '', ownerEntity: owner ? (owner.entity || '') : '',
+          phrase: reason.phrase, snippet: reason.snippet || '', date: latest.date,
+        });
       }
-      const hit = found.sell || found.later;
-      if (!hit) continue;
-      if (calls.some((a) => iso(a.activity_date) > t.date)) continue;
+      continue;
+    }
+    if (futureCallback) continue;
+    const tags = [];
+    let snippetText = '';
+    if (positive) {
+      const weighted = positive.sells.map((s) => sellWeight(s.phrase, positive.date, today));
+      const best = weighted.reduce((a, b) => (b.points > a.points ? b : a));
+      tags.push({ label: weighted.map((w) => w.label).join('; '), points: best.points });
+      snippetText = positive.snippet || '';
+    }
+    if (laterHit) {
       let due = '';
-      if (found.later && found.later.unit) {
-        due = impliedDate(t.date, found.later);
-        if (due && due > today) continue;
+      let points = SIGNALS.callbackUndated;
+      if (laterHit.unit) {
+        due = impliedDate(laterHit.date, laterHit);
+        if (due && due > today) points = 0;
+        else points = SIGNALS.callbackDue;
       }
-      const row = {
-        propertyId: p.id, address: p.address, city: p.city, state: p.state,
-        ownerName: (ownerOf(p, t.owner_id) || {}).name || '',
-        ownerEntity: (ownerOf(p, t.owner_id) || {}).entity || '',
-        date: t.date, phrase: hit.phrase, snippet: hit.snippet, due: due || '',
-        kind: found.sell ? 'sell' : 'callback',
-      };
-      if (!best || row.date > best.date) best = row;
+      if (points) {
+        tags.push({ label: due ? `${laterHit.phrase} (due ${due})` : laterHit.phrase, points });
+        if (!snippetText) snippetText = laterHit.snippet || '';
+      }
     }
-    if (best && !(iso(p.callback_date) && iso(p.callback_date) > today)) missed.push(best);
+    const stale = contactDays !== null && contactDays > STALE_DAYS;
+    const qualified = tags.some((t) => t.points > 0) || stale;
+    if (!qualified) continue;
+    if (stale) tags.push({ label: `Talked ${days} days ago`, points: SIGNALS.stale });
+    const corpus = [latest.notes, p.notes, ...(p.owners || []).map((o) => o.notes)].filter(Boolean).join('\n');
+    const retired = retirementHit(corpus);
+    if (retired) {
+      tags.push({ label: retired.label, points: SIGNALS.retirement });
+      if (!snippetText) snippetText = retired.snippet;
+    }
+    const ages = (p.owners || []).map((o) => qualifyingAge(o, today)).filter(Boolean).sort((a, b) => b.age - a.age);
+    if (ages[0]) tags.push({ label: ages[0].label, points: ages[0].points });
+    const held = iso(p.sale_date || p.saleDate);
+    if (held && daysBetween(today, held) >= SIGNALS.holdYears * 365) tags.push({ label: `Held since ${held.slice(0, 4)}`, points: SIGNALS.longHold });
+    if (leaseIsSoon(p, today)) tags.push({ label: 'Lease expiring', points: SIGNALS.leaseSoon });
+    if (/\b(?:acquired by|acquisition by|merging with|merged with|merger with)\s+(?:a\s+|the\s+)?(?:[\w-]+\s+){0,3}?(?:hospital|group|health system)\b/i.test(normalizeNote(corpus))
+      || /\b(?:hospital|health system)\b.{0,40}\b(?:acquir|merg)/i.test(normalizeNote(corpus))) {
+      tags.push({ label: 'Hospital or group', points: SIGNALS.hospital });
+    }
+    if (/\bvacant(?:cy)?\b/i.test(`${p.tenancy || ''} ${corpus}`)) tags.push({ label: 'Vacant', points: SIGNALS.vacancy });
+    if (/\brelocat(?:e|es|ed|ing|ion)\b|\bmoving (?:the )?practice\b/i.test(normalizeNote(corpus))) tags.push({ label: 'Relocation', points: SIGNALS.relocation });
+    if ((p.owners || []).some(isEstateOwner)) tags.push({ label: 'Estate or trust', points: SIGNALS.estate });
+    const mail = mailingState((owner && owner.mailing_address) || (p.owners || []).map((o) => o.mailing_address).find(Boolean) || '');
+    if (mail && p.state && mail !== String(p.state).toUpperCase()) tags.push({ label: `Out of state (${mail})`, points: SIGNALS.outOfState });
+    if (!snippetText) snippetText = clean(latest.notes || p.notes || '').slice(0, 140);
+    let overdue = days || 0;
+    const dueTag = tags.find((t) => /due \d{4}-\d{2}-\d{2}/.test(t.label));
+    if (dueTag) {
+      const dueDay = dueTag.label.match(/due (\d{4}-\d{2}-\d{2})/);
+      if (dueDay) overdue = Math.max(overdue, daysBetween(today, dueDay[1]) || 0);
+    }
+    ranked.push({
+      propertyId: p.id, address: p.address, city: p.city, state: p.state,
+      ownerName: owner ? (owner.name || '') : '', ownerEntity: owner ? (owner.entity || '') : '',
+      lastTalked: latest.date, daysSince: days, daysOverdue: overdue,
+      score: tags.reduce((n, t) => n + t.points, 0), tags, snippet: snippetText,
+    });
   }
-  stale.sort((a, b) => (a.lastTalked < b.lastTalked ? -1 : a.lastTalked > b.lastTalked ? 1 : a.propertyId - b.propertyId));
-  missed.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.propertyId - b.propertyId));
-  return { stale, missed, excluded, staleDays: STALE_DAYS };
+  ranked.sort((a, b) => b.score - a.score || b.daysOverdue - a.daysOverdue || b.daysSince - a.daysSince || a.propertyId - b.propertyId);
+  return { ranked, excluded, staleDays: STALE_DAYS, signals: SIGNALS };
 }
 
+function followFilter(state, states, action) {
+  const { esc } = require('./views');
+  const opts = (states || []).map((s) => `<option value="${esc(s)}"${s === state ? ' selected' : ''}>${esc(s)}</option>`).join('');
+  return `<form class="filters" method="get" action="${action}">
+    <label class="fl">State <select name="fu_state"><option value="">All states</option>${opts}</select></label>
+    <button>Filter</button> <a class="btn ghost" href="${action}">Reset</a></form>`;
+}
 function renderFollowUps(model, { state, states }) {
   const { esc, fmtDate } = require('./views');
-  const opts = (states || []).map((s) => `<option value="${esc(s)}"${s === state ? ' selected' : ''}>${esc(s)}</option>`).join('');
-  const rowStale = (r) => `<tr>
+  const hidden = model.excluded.length
+    ? `<p class="muted small"><a href="/callbacks/not-selling${state ? `?fu_state=${encodeURIComponent(state)}` : ''}">${model.excluded.length} clearly not selling, hidden</a></p>`
+    : '';
+  const tags = (r) => r.tags.map((t) => `<span class="badge">${esc(t.label)}${t.points ? ` <em>${t.points}</em>` : ''}</span>`).join(' ');
+  const row = (r) => `<tr>
+    <td class="num"><b>${r.score}</b></td>
     <td>${esc(r.ownerName || 'No owner on file')}${r.ownerEntity ? `<div class="muted small">${esc(r.ownerEntity)}</div>` : ''}</td>
     <td><a href="/properties/${r.propertyId}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
+    <td class="small">${tags(r)}</td>
     <td>${esc(fmtDate(r.lastTalked))}</td>
     <td class="num">${r.daysSince}</td>
     <td class="small">${esc(r.snippet || '')}</td></tr>`;
-  const rowMiss = (r) => `<tr>
-    <td>${esc(r.ownerName || 'No owner on file')}${r.ownerEntity ? `<div class="muted small">${esc(r.ownerEntity)}</div>` : ''}</td>
+  return `${followFilter(state, states, '/callbacks')}
+  <h2 id="likely">Most likely to sell <span class="muted">(${model.ranked.length})</span></h2>
+  <p class="muted small">Ranked when the page is read. Explicit sell interest and a past-due callback come first, then age 75+ and 65+ from a birth year with high or medium confidence, then other signals already stored on the record, then a neutral talk older than ${model.staleDays} days. Clear “not selling” or “not interested” notes are left off this list. A future scheduled callback stays in the lists above. A new logged call drops the row until it qualifies again.</p>
+  ${model.ranked.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th class="num">Score</th><th>Owner</th><th>Property</th><th>Why</th><th>Last talked</th><th class="num">Days</th><th>Note</th></tr></thead><tbody>${model.ranked.map(row).join('')}</tbody></table></div>` : '<p class="muted">No one in this set.</p>'}
+  ${hidden}`;
+}
+function renderNotSelling(model, { state, states }) {
+  const { esc, fmtDate } = require('./views');
+  const row = (r) => `<tr>
+    <td>${esc(r.ownerName || 'No owner on file')}</td>
     <td><a href="/properties/${r.propertyId}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
-    <td class="small"><b>${esc(r.phrase)}</b>${r.due ? `<div class="muted">Implied ${esc(fmtDate(r.due))}</div>` : ''}<div>${esc(r.snippet || '')}</div></td>
+    <td class="small"><b>${esc(r.phrase || '')}</b><div>${esc(r.snippet || '')}</div></td>
     <td>${esc(fmtDate(r.date))}</td></tr>`;
-  return `<form class="filters" method="get" action="/callbacks">
-    <label class="fl">Follow-up state <select name="fu_state"><option value="">All states</option>${opts}</select></label>
-    <button>Filter</button> <a class="btn ghost" href="/callbacks">Reset</a></form>
-  <h2 id="stale">Haven't talked in 6 months <span class="muted">(${model.stale.length})</span></h2>
-  <p class="muted small">Owners with a real conversation (Talked, Interested, Not interested, or an imported Talked / last-contacted Talked record) more than ${model.staleDays} days ago. No answer, voicemail, text, and wrong number do not count as a talk. A later logged call, a future callback, or Do not call / wrong number removes the row. Oldest talk first.</p>
-  ${model.stale.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Owner</th><th>Property</th><th>Last talked</th><th class="num">Days</th><th>Last note</th></tr></thead><tbody>${model.stale.map(rowStale).join('')}</tbody></table></div>` : '<p class="muted">No one in this set.</p>'}
-  <h2 id="missed">Missed follow-ups <span class="muted">(${model.missed.length})</span></h2>
-  <p class="muted small">A past conversation mentioned selling or asked for a later call, and no call was logged after it. “Call back in X months/years” or “next year” appears only after that implied date. A phrase is not sell interest when a negator such as “not”, “doesn't”, “does not”, or “never” sits just before it (“doesn't want to sell”, “not open to offers”). Only an unnegated phrase is listed.</p>
-  ${model.missed.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Owner</th><th>Property</th><th>Why it is listed</th><th>Conversation</th></tr></thead><tbody>${model.missed.map(rowMiss).join('')}</tbody></table></div>` : '<p class="muted">No missed follow-ups in this set.</p>'}
-  ${model.excluded.length ? `<details class="box"><summary>Excluded by negation (${model.excluded.length})</summary><ul class="acts plain">${model.excluded.slice(0, 30).map((e) => `<li class="small">${esc(e.address || '')} · <b>${esc(e.phrase)}</b> · ${esc(e.snippet)}</li>`).join('')}</ul></details>` : ''}`;
+  return `${followFilter(state, states, '/callbacks/not-selling')}
+  <h2>Clearly not selling <span class="muted">(${model.excluded.length})</span></h2>
+  <p class="muted small">Hidden from Callbacks. A later conversation with a real sell phrase puts the record back on Most likely to sell. Nothing here is written back to the notes.</p>
+  ${model.excluded.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Owner</th><th>Property</th><th>Why it is hidden</th><th>Date</th></tr></thead><tbody>${model.excluded.map(row).join('')}</tbody></table></div>` : '<p class="muted">None in this set.</p>'}`;
 }
 
-module.exports = { STALE_DAYS, classifyText, buildFollowUps, daysBetween, isTalk, renderFollowUps };
+module.exports = { STALE_DAYS, SIGNALS, classifyText, buildFollowUps, daysBetween, isTalk, renderFollowUps, renderNotSelling, qualifyingAge };
