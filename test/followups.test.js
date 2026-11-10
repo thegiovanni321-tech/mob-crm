@@ -83,6 +83,65 @@ test('sell interest and later-call phrases are listed, negations are excluded', 
   assert.equal(afterFuture.missed.length, 0);
 });
 
+test('curly apostrophes and want-to-sell negations stay off missed follow-ups', () => {
+  const forms = [
+    'Doesn\u2019t want to sell',
+    'don\u2019t want to sell',
+    'does not want to sell',
+    'do not want to sell',
+    'didn\u2019t want to sell',
+    'did not want to sell',
+    'isn\u2019t interested in selling',
+    'is not interested in selling',
+    'won\u2019t sell',
+    'wouldn\u2019t want to sell',
+    'not want to sell',
+    'not looking to sell',
+    'never wants to sell',
+    'never looking to sell',
+    'no interest in selling',
+    'has no plans to sell',
+    'no intention of selling',
+    'not open to offers',
+    'not thinking about selling',
+    'not considering selling',
+    'not yet looking to sell',
+    'doesn\u2019t plan to sell',
+    'does   not\twant to sell',
+  ];
+  for (const notes of forms) {
+    const found = classifyText(notes);
+    assert.equal(found.sell, null, notes);
+    assert.ok(found.excluded.length >= 1, notes);
+    assert.match(found.excluded.map((e) => e.snippet).join(' '), /sell|offers/i, notes);
+    const row = buildFollowUps({
+      today: TODAY,
+      properties: [prop({ id: 440, notes })],
+      activities: [talk({ property_id: 440, notes: 'Spoke briefly.' })],
+    });
+    assert.equal(row.missed.length, 0, notes);
+    assert.ok(row.excluded.some((e) => e.snippet && e.phrase), notes);
+  }
+  const straight = classifyText("Doesn't want to sell");
+  assert.equal(straight.sell, null);
+  assert.match(straight.excluded[0].phrase, /doesn't want to sell/i);
+  const wants = classifyText('She wants to sell the building.');
+  assert.equal(wants.sell.phrase, 'wants to sell');
+  const looking = classifyText('They are looking to sell.');
+  assert.equal(looking.sell.phrase, 'looking to sell');
+  const contrast = classifyText('Doesn\u2019t want to sell the lot, but is looking to sell the building.');
+  assert.equal(contrast.sell.phrase, 'looking to sell');
+  assert.match(contrast.excluded.map((e) => e.phrase).join(' '), /want to sell/i);
+  const onlyNeg = buildFollowUps({
+    today: TODAY,
+    properties: [prop({ notes: 'Doesn\u2019t want to sell' })],
+    activities: [talk({ notes: 'Talked for a minute.' })],
+  });
+  assert.equal(onlyNeg.missed.length, 0);
+  assert.ok(onlyNeg.excluded.some((e) => /want to sell/i.test(e.phrase)));
+  assert.ok(onlyNeg.excluded.some((e) => /want to sell/i.test(e.snippet)));
+});
+
 test('a newer call drops a missed follow-up', () => {
   const gone = buildFollowUps({
     today: TODAY, properties: [prop()],

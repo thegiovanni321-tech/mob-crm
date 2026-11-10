@@ -10,27 +10,32 @@ const TALK_CALL = new Set(['Talked', 'Interested', 'Not interested']);
 const DEAD_STATUS = new Set(['Do not call']);
 const DEAD_OUTCOME = new Set(['Wrong number', 'Do not call']);
 
-const NEGATIVE = [
+// Apostrophes are normalized to ' before these run, so only the ASCII form is required.
+// A sell phrase is negated when one of these sits in the short clause window before it.
+const NEG_WORD_SRC = String.raw`\b(?:doesn['’]t|don['’]t|didn['’]t|isn['’]t|aren['’]t|wasn['’]t|weren['’]t|won['’]t|wouldn['’]t|shouldn['’]t|can['’]t|couldn['’]t|doesnt|dont|didnt|isnt|arent|wont|wouldnt|cant|couldnt|does not|do not|did not|is not|are not|was not|were not|will not|would not|should not|cannot|can not|could not|has no|have no|had no|not|no|never)\b`;
+const CONTRAST_SRC = String.raw`\b(?:but|however|although|though|except)\b`;
+// Phrases that are negations even when they do not contain a positive sell phrase.
+const EXPLICIT_NEG = [
   /\bnot selling\b/gi,
   /\bnever selling\b/gi,
   /\bno interest in selling\b/gi,
-  /\bnot interested in selling\b/gi,
-  /\b(?:do not|don't|dont)\s+want to sell\b/gi,
-  /\b(?:won't|will not)\s+sell\b/gi,
   /\bnot for sale\b/gi,
-  /\b(?:do not|don't|dont|never)\s+call\s*back\b/gi,
+  /\bno intention of selling\b/gi,
+  /\b(?:won['’]t|wont|will not|wouldn['’]t|wouldnt|would not)\s+sell\b/gi,
+  /\b(?:do not|don['’]t|dont|does not|doesn['’]t|doesnt|never)\s+call\s*back\b/gi,
   /\bno need to call\s*back\b/gi,
 ];
 const SELL = [
-  { re: /\binterested in selling\b/i, phrase: 'interested in selling' },
-  { re: /\bmay sell\b/i, phrase: 'may sell' },
-  { re: /\bopen to offers\b/i, phrase: 'open to offers' },
-  { re: /\bthinking about selling\b/i, phrase: 'thinking about selling' },
-  { re: /\bsell in (\d+) years?\b/i, phrase: 'sell in X years' },
-  { re: /\bwants?(?:\s+a)? valuation\b/i, phrase: 'wants valuation' },
-  { re: /\bBOV\b/i, phrase: 'BOV' },
-  { re: /\b(?:want|wants|looking) to sell\b/i, phrase: 'looking to sell' },
-  { re: /\bconsider(?:ing)? selling\b/i, phrase: 'considering selling' },
+  { re: /\binterested in selling\b/gi },
+  { re: /\bthinking about selling\b/gi },
+  { re: /\bconsider(?:ing)? selling\b/gi },
+  { re: /\b(?:want|wants|looking) to sell\b/gi },
+  { re: /\bplans? to sell\b/gi },
+  { re: /\bopen to offers\b/gi },
+  { re: /\bmay sell\b/gi },
+  { re: /\bsell in \d+ years?\b/gi },
+  { re: /\bwants?(?:\s+a)? valuation\b/gi },
+  { re: /\bBOV\b/gi },
 ];
 const LATER = [
   { re: /\bcall\s*back in (\d+) months?\b/i, phrase: 'call back in X months', unit: 'months' },
@@ -66,20 +71,61 @@ function snippet(text, index, length) {
   const raw = text.slice(start, end).replace(/\s+/g, ' ').trim();
   return (start > 0 ? '…' : '') + raw + (end < text.length ? '…' : '');
 }
-function maskNegations(text) {
-  const original = String(text || '');
-  let src = original;
-  const excluded = [];
-  for (const re of NEGATIVE) {
-    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+function normalizeNote(text) {
+  return String(text || '')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035\u02BC\u0060\u00B4]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u00AB\u00BB]/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function clean(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+function sellLabel(matched) {
+  const cleanMatch = clean(matched);
+  return /^bov$/i.test(cleanMatch) ? 'BOV' : cleanMatch.toLowerCase();
+}
+function findAll(text, specs) {
+  const hits = [];
+  for (const spec of specs) {
+    const re = spec.re ? new RegExp(spec.re.source, 'gi') : new RegExp(spec.source, 'gi');
     let m;
-    while ((m = g.exec(src))) {
-      excluded.push({ phrase: m[0], snippet: snippet(original, m.index, m[0].length) });
-      src = src.slice(0, m.index) + ' '.repeat(m[0].length) + src.slice(m.index + m[0].length);
-      if (m.index === g.lastIndex) g.lastIndex++;
+    while ((m = re.exec(text))) {
+      hits.push({ index: m.index, length: m[0].length, matched: m[0], spec });
+      if (m.index === re.lastIndex) re.lastIndex++;
     }
   }
-  return { src, excluded };
+  hits.sort((a, b) => a.index - b.index || b.length - a.length);
+  return hits;
+}
+function overlaps(aStart, aLen, bStart, bLen) {
+  return aStart < bStart + bLen && aStart + aLen > bStart;
+}
+function windowBefore(text, index) {
+  const from = Math.max(0, index - 40);
+  let slice = text.slice(from, index);
+  let cut = -1;
+  for (const ch of '.!?;:,') cut = Math.max(cut, slice.lastIndexOf(ch));
+  if (cut >= 0) slice = slice.slice(cut + 1);
+  return { slice, start: index - slice.length };
+}
+function negationBefore(text, index) {
+  const { slice, start } = windowBefore(text, index);
+  const re = new RegExp(NEG_WORD_SRC, 'gi');
+  let last = null;
+  let m;
+  while ((m = re.exec(slice))) last = m;
+  if (!last) return null;
+  const after = slice.slice(last.index + last[0].length);
+  if (new RegExp(CONTRAST_SRC, 'i').test(after)) return null;
+  return { start: start + last.index };
+}
+function blankRanges(text, ranges) {
+  const chars = text.split('');
+  for (const [s, e] of ranges) {
+    for (let i = Math.max(0, s); i < e && i < chars.length; i++) chars[i] = ' ';
+  }
+  return chars.join('');
 }
 function parseLooseDate(raw) {
   const s = String(raw || '').trim();
@@ -107,19 +153,51 @@ function impliedDate(day, later) {
   if (later.unit === 'afterDate') return parseLooseDate(later.rawDate);
   return '';
 }
-function classifyText(text) {
-  const { src, excluded } = maskNegations(text);
-  let sell = null;
-  let later = null;
-  for (const spec of SELL) {
-    const m = spec.re.exec(src);
-    if (m) { sell = { phrase: spec.phrase, snippet: snippet(src, m.index, m[0].length), matched: m[0] }; break; }
+function classifyText(raw) {
+  const text = normalizeNote(raw);
+  const excluded = [];
+  const covered = [];
+  const covers = (index, length) => covered.some(([s, e]) => overlaps(index, length, s, e - s));
+  const sellHits = findAll(text, SELL);
+  const genuine = [];
+  for (const hit of sellHits) {
+    if (covers(hit.index, hit.length)) continue;
+    const neg = negationBefore(text, hit.index);
+    if (neg) {
+      const end = hit.index + hit.length;
+      excluded.push({ phrase: clean(text.slice(neg.start, end)), snippet: snippet(text, neg.start, end - neg.start) });
+      covered.push([neg.start, end]);
+    } else genuine.push(hit);
   }
+  const kept = [];
+  for (const hit of genuine) {
+    if (covers(hit.index, hit.length)) continue;
+    if (kept.some((k) => overlaps(hit.index, hit.length, k.index, k.length))) continue;
+    kept.push(hit);
+  }
+  for (const hit of findAll(text, EXPLICIT_NEG.map((re) => ({ re })))) {
+    if (covers(hit.index, hit.length)) continue;
+    if (kept.some((k) => overlaps(hit.index, hit.length, k.index, k.length))) continue;
+    excluded.push({ phrase: clean(hit.matched), snippet: snippet(text, hit.index, hit.length) });
+    covered.push([hit.index, hit.index + hit.length]);
+  }
+  const blank = blankRanges(text, covered);
+  const sell = kept[0]
+    ? { phrase: sellLabel(kept[0].matched), snippet: snippet(text, kept[0].index, kept[0].length), matched: kept[0].matched }
+    : null;
+  let later = null;
   for (const spec of LATER) {
-    const m = spec.re.exec(src);
+    const m = new RegExp(spec.re.source, spec.re.ignoreCase ? 'i' : '').exec(blank);
     if (!m) continue;
     const amount = spec.unit && spec.unit !== 'afterDate' && m[1] ? Number(m[1]) : null;
-    later = { phrase: spec.phrase, snippet: snippet(src, m.index, m[0].length), matched: m[0], amount, unit: spec.unit || '', rawDate: spec.unit === 'afterDate' ? m[1] : '' };
+    later = {
+      phrase: spec.phrase,
+      snippet: snippet(text, m.index, m[0].length),
+      matched: m[0],
+      amount,
+      unit: spec.unit || '',
+      rawDate: spec.unit === 'afterDate' ? m[1] : '',
+    };
     break;
   }
   return { sell, later, excluded };
@@ -228,7 +306,7 @@ function renderFollowUps(model, { state, states }) {
   <p class="muted small">Owners with a real conversation (Talked, Interested, Not interested, or an imported Talked / last-contacted Talked record) more than ${model.staleDays} days ago. No answer, voicemail, text, and wrong number do not count as a talk. A later logged call, a future callback, or Do not call / wrong number removes the row. Oldest talk first.</p>
   ${model.stale.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Owner</th><th>Property</th><th>Last talked</th><th class="num">Days</th><th>Last note</th></tr></thead><tbody>${model.stale.map(rowStale).join('')}</tbody></table></div>` : '<p class="muted">No one in this set.</p>'}
   <h2 id="missed">Missed follow-ups <span class="muted">(${model.missed.length})</span></h2>
-  <p class="muted small">A past conversation mentioned selling or asked for a later call, and no call was logged after it. “Call back in X months/years” or “next year” appears only after that implied date. Negations such as “not selling” are not sell interest.</p>
+  <p class="muted small">A past conversation mentioned selling or asked for a later call, and no call was logged after it. “Call back in X months/years” or “next year” appears only after that implied date. A phrase is not sell interest when a negator such as “not”, “doesn't”, “does not”, or “never” sits just before it (“doesn't want to sell”, “not open to offers”). Only an unnegated phrase is listed.</p>
   ${model.missed.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Owner</th><th>Property</th><th>Why it is listed</th><th>Conversation</th></tr></thead><tbody>${model.missed.map(rowMiss).join('')}</tbody></table></div>` : '<p class="muted">No missed follow-ups in this set.</p>'}
   ${model.excluded.length ? `<details class="box"><summary>Excluded by negation (${model.excluded.length})</summary><ul class="acts plain">${model.excluded.slice(0, 30).map((e) => `<li class="small">${esc(e.address || '')} · <b>${esc(e.phrase)}</b> · ${esc(e.snippet)}</li>`).join('')}</ul></details>` : ''}`;
 }
