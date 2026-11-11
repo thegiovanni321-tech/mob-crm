@@ -20,7 +20,7 @@ function layout(title, body, opts = {}) {
   const todayN = typeof callsToday === 'number' ? callsToday : calls.get().callsToday;
   const leadsN = calls.get().leadsCount;
   const leadsLabel = typeof leadsN === 'number' ? `Leads (${leadsN})` : 'Leads';
-  const nav = [['/', 'Home', 'home'], ['/states', 'States', 'states'], ['/tenants', 'Tenants', 'tenants'], ['/properties', 'Properties', 'properties'], ['/owners', 'Owners', 'owners'], ['/callbacks', 'Callbacks', 'callbacks'], ['/leads', leadsLabel, 'leads'], ['/comps', 'Comps', 'comps'], ['/buyers', 'Buyers', 'buyers'], ['/listings', 'Listings', 'listings']];
+  const nav = [['/', 'Home', 'home'], ['/states', 'States', 'states'], ['/tenants', 'Tenants', 'tenants'], ['/properties', 'Properties', 'properties'], ['/owners', 'Owners', 'owners'], ['/callbacks', 'Callbacks', 'callbacks'], ['/leads', leadsLabel, 'leads'], ['/comps', 'Comps', 'comps'], ['/buyers', 'Buyers', 'buyers'], ['/buyer-needs', 'Buyer Needs', 'needs'], ['/listings', 'Listings', 'listings']];
   const callsLink = typeof todayN === 'number'
     ? `<a class="calls-today" href="/calls" title="Logged calls today, Eastern Time">${esc(calls.label(todayN))}</a>`
     : '';

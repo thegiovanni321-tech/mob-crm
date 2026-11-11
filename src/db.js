@@ -80,5 +80,5 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_kind_record_file ON attachments(kind, record_id, filename);
 CREATE INDEX IF NOT EXISTS idx_attachments_kind_record ON attachments(kind, record_id);
 `;
-async function migrate() { const db = await init(); await db.exec(SCHEMA); await db.exec(require('./comps-core').SCHEMA); await db.exec(require('./general-sync').SCHEMA); return db; }
+async function migrate() { const db = await init(); await db.exec(SCHEMA); await db.exec(require('./comps-core').SCHEMA); await db.exec(require('./buyer-needs').SCHEMA); await db.exec(require('./general-sync').SCHEMA); return db; }
 module.exports = { init, migrate };

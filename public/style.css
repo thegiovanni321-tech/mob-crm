@@ -51,6 +51,7 @@ fieldset{border:1px solid var(--line);border-radius:10px}.logcall{background:#ff
 .edit-date{display:flex;gap:.4rem;align-items:center;margin-top:.35rem;flex-wrap:wrap}
 .also-owns{margin-top:.25rem}.also-owns a{margin-right:.35rem}
 .back-origin{margin:0 0 .7rem;font-size:1.05rem}
+.reason.met b{color:#067647}.reason.unknown{color:var(--mut)}.reason.not-met b{color:#b42318}
 .other-owned{margin:.45rem 0 .2rem}.other-owned ul{margin:.2rem 0 0;padding-left:1.1rem}
 .also-apply{display:flex;flex-wrap:wrap;gap:.35rem .8rem;align-items:center}
 .edit-date input[type=date]{font:inherit}

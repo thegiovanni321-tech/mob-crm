@@ -505,6 +505,12 @@ async function callbackSection(ret, extra = {}) {
     const rows = People.collapseByOwner(ret.from === 'cbhide' ? follow.excluded : follow.ranked, people);
     return rows.map((row) => ({ id: row.propertyId, address: row.address || '' }));
   }
+  if (ret.from === 'bn' && ret.bn_id) {
+    const [need] = await db.query('SELECT * FROM buyer_needs WHERE id=$1', [ret.bn_id]);
+    if (!need) return [];
+    const rows = await require('./buyer-needs').rankedMatches(db, need, { strict: !!ret.bn_strict, state: extra.state, q: extra.q });
+    return rows.map((row) => ({ id: row.id, address: row.address || '' }));
+  }
   if (ret.from === 'buyer' && ret.bid) {
     const Buyers = require('./buyers');
     const [b] = await Buyers.loadBuyers(db, { id: ret.bid });
@@ -848,6 +854,7 @@ app.get('/calls', wrap(async (req, res) => {
 
 const comps = require('./comps-routes')(app, () => db, wrap);
 require('./buyers-routes')(app, () => db, wrap);
+require('./buyer-needs-routes')(app, () => db, wrap);
 
 app.get('/admin/import-owner-ages', (req, res) => {
   res.send(layout('Import owner ages', `<h1>Import owner ages</h1>

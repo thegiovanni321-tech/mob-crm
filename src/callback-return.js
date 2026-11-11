@@ -1,7 +1,7 @@
 // Which list a property was opened from. Previous/Next and Back use this, not the property's state.
-const FROM = new Set(['cb', 'cbdue', 'cbsoon', 'cbhide', 'listings', 'buyer', 'state', 'leads']);
-const ORDERED = new Set(['cb', 'cbdue', 'cbsoon', 'cbhide', 'listings', 'buyer', 'leads']);
-const KEYS = ['from', 'fu_state', 'cb_at', 'lst', 'bid', 'ld_at', 'ret'];
+const FROM = new Set(['cb', 'cbdue', 'cbsoon', 'cbhide', 'listings', 'buyer', 'state', 'leads', 'bn']);
+const ORDERED = new Set(['cb', 'cbdue', 'cbsoon', 'cbhide', 'listings', 'buyer', 'leads', 'bn']);
+const KEYS = ['from', 'fu_state', 'cb_at', 'lst', 'bid', 'ld_at', 'bn_id', 'bn_at', 'bn_strict', 'ret'];
 
 function propertyRet(v) {
   const n = Number.parseInt(v, 10);
@@ -14,7 +14,7 @@ function returnFromQuery(q) {
   if (!FROM.has(from)) return ret ? { from: '', fu_state: '', cb_at: null, lst: '', bid: null, ret } : null;
   const state = String(src.fu_state || '').trim().toUpperCase();
   const fu_state = /^[A-Z]{2}$/.test(state) ? state : '';
-  const atRaw = from === 'leads' ? src.ld_at : src.cb_at;
+  const atRaw = from === 'leads' ? src.ld_at : from === 'bn' ? src.bn_at : src.cb_at;
   const at = Number.parseInt(atRaw, 10);
   const lst = String(src.lst || '').trim().slice(0, 40);
   const bid = Number.parseInt(src.bid, 10);
@@ -24,6 +24,8 @@ function returnFromQuery(q) {
     cb_at: Number.isInteger(at) && at >= 0 && at < 100000 ? at : null,
     lst,
     bid: Number.isInteger(bid) && bid > 0 ? bid : null,
+    bn_id: propertyRet(src.bn_id),
+    bn_strict: String(src.bn_strict || '') === '1',
     ret,
   };
 }
@@ -35,6 +37,10 @@ function returnQuery(ctx) {
     if (ctx.fu_state) out.fu_state = ctx.fu_state;
     if (ctx.from === 'leads') {
       if (ctx.cb_at != null && ctx.cb_at !== '') out.ld_at = String(ctx.cb_at);
+    } else if (ctx.from === 'bn') {
+      if (ctx.cb_at != null && ctx.cb_at !== '') out.bn_at = String(ctx.cb_at);
+      if (ctx.bn_id) out.bn_id = String(ctx.bn_id);
+      if (ctx.bn_strict) out.bn_strict = '1';
     } else if (ctx.cb_at != null && ctx.cb_at !== '') out.cb_at = String(ctx.cb_at);
     if (ctx.lst) out.lst = ctx.lst;
     if (ctx.bid) out.bid = String(ctx.bid);
@@ -60,6 +66,12 @@ function listUrl(ctx, anchorId) {
     const s = q.toString();
     return '/leads' + (s ? '?' + s : '') + (anchorId ? `#p-${Number(anchorId)}` : '');
   }
+  if (ctx.from === 'bn' && ctx.bn_id) {
+    const q = new URLSearchParams();
+    if (ctx.bn_strict) q.set('strict', '1');
+    const s = q.toString();
+    return '/buyer-needs/' + ctx.bn_id + (s ? '?' + s : '') + (anchorId ? '#p-' + Number(anchorId) : '');
+  }
   if (ctx.from === 'buyer' && ctx.bid) return '/buyers/' + ctx.bid;
   if (ctx.from === 'state') return '/states/' + encodeURIComponent(ctx.stateCode || 'Unknown');
   return '/properties';
@@ -77,6 +89,14 @@ function backTarget(list, ret, anchorId) {
     return { href: '/leads' + (s ? '?' + s : '') + (anchorId ? '#p-' + Number(anchorId) : ''), label: '← Back to Leads' };
   }
   if (ret && ret.from === 'listings') return { href: listUrl(ret), label: '← Back to Listings' };
+  if (ret && ret.from === 'bn' && ret.bn_id) {
+    const q = new URLSearchParams();
+    if (ret.bn_strict) q.set('strict', '1');
+    if (src.state) q.set('state', src.state);
+    if (src.q) q.set('q', src.q);
+    const s = q.toString();
+    return { href: '/buyer-needs/' + ret.bn_id + (s ? '?' + s : '') + (anchorId ? '#p-' + Number(anchorId) : ''), label: '← Back to Buyer Need' };
+  }
   if (ret && ret.from === 'buyer') return { href: listUrl(ret), label: '← Back to buyer' };
   if (ret && ret.from === 'state' && src.state) {
     const rest = { ...src };

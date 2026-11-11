@@ -90,6 +90,8 @@ Lease rows from the source `Crexi Inventory Export (medical office) 2026-11-06` 
 
 Buyers remain capped-sale only. The block is limited to medical and professional office comps.
 
+**Buyer Needs** is a separate list of what a buyer is looking for. Each need can point at a Buyers contact or stand on its own. Criteria are optional. A property field that is blank counts as unknown, and Strict hides those. Price and cap rate are the recorded sale unless a linked listing supplies an asking figure, which is labeled asking. Opening a match keeps Back to Buyer Need, and Previous and Next follow that match list.
+
 ```bash
 npm test
 ```

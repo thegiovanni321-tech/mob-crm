@@ -72,6 +72,7 @@ module.exports = function mountBuyers(app, getDb, wrap) {
     const priced = b.purchases.filter((c) => Number(c.price) > 0);
     res.send(layout(b.display, `<p class="crumbs"><a href="/buyers">Buyers</a> ›</p>
       <h1>${esc(b.display)}</h1>${b.sub ? `<p class="muted">${esc(b.sub)}</p>` : ''}
+      <p><a class="btn" href="/buyer-needs/new?buyer_id=${b.id}">Add need</a></p>
       <dl class="facts"><div><dt>Purchases</dt><dd>${b.purchases.length}</dd></div><div><dt>States</dt><dd>${esc(states.join(', '))}</dd></div>
         ${priced.length ? `<div><dt>Price range</dt><dd>${money(Math.min(...priced.map((c) => +c.price)))} – ${money(Math.max(...priced.map((c) => +c.price)))}</dd></div>` : ''}
         ${phones.length ? `<div><dt>Phone</dt><dd>${phones.map((p) => `<a href="${telHref(p)}">${esc(p)}</a>`).join('<br>')}</dd></div>` : ''}
