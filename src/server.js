@@ -245,18 +245,26 @@ async function followModel(fuState) {
     if (!ownersOf.has(o.property_id)) ownersOf.set(o.property_id, []);
     ownersOf.get(o.property_id).push(o);
   }
+  const leasesOf = new Map();
+  for (const l of fuLeases) {
+    if (!leasesOf.has(l.property_id)) leasesOf.set(l.property_id, []);
+    leasesOf.get(l.property_id).push(l);
+  }
+  const listingsOf = new Map();
+  for (const l of fuListings) {
+    if (!listingsOf.has(l.property_id)) listingsOf.set(l.property_id, []);
+    listingsOf.get(l.property_id).push(l);
+  }
   for (const p of fuProps) {
     p.owners = ownersOf.get(p.id) || [];
     let exp = '';
     let years = null;
-    for (const l of fuLeases) {
-      if (l.property_id !== p.id) continue;
+    for (const l of leasesOf.get(p.id) || []) {
       let e = l.expiration_date ? String(l.expiration_date).slice(0, 10) : '';
       if (!e && l.start_date && l.term_months) e = plusDays(String(l.start_date).slice(0, 10), Math.round(Number(l.term_months) * 30.4375));
       if (e && (!exp || e < exp)) exp = e;
     }
-    for (const l of fuListings) {
-      if (l.property_id !== p.id) continue;
+    for (const l of listingsOf.get(p.id) || []) {
       const e = l.lease_expiration ? String(l.lease_expiration).slice(0, 10) : '';
       if (e && (!exp || e < exp)) exp = e;
       if (l.years_remaining != null && l.years_remaining !== '' && (years == null || Number(l.years_remaining) < years)) years = Number(l.years_remaining);
@@ -266,26 +274,26 @@ async function followModel(fuState) {
   }
   const states = [...new Set(fuProps.map((p) => p.state).filter(Boolean))].sort();
   const peopleBundle = await People.loadPeople(db);
-  return { t, states, people: peopleBundle.owners, links: peopleBundle.links, follow: Follow.buildFollowUps({ today: t, properties: fuProps, activities: fuActs, state: fuState }) };
+  return { t, states, people: peopleBundle.owners, links: peopleBundle.links, keyOf: peopleBundle.keyOf, follow: Follow.buildFollowUps({ today: t, properties: fuProps, activities: fuActs, state: fuState }) };
 }
 app.get('/callbacks/not-selling', wrap(async (req, res) => {
   const fuState = (nz(req.query.fu_state) || '').toUpperCase();
-  const { follow, states, people } = await followModel(fuState);
+  const { follow, states, people, keyOf } = await followModel(fuState);
   res.send(layout('Not selling', `<h1>Not selling</h1><p class="muted"><a href="/callbacks">Back to Callbacks</a></p>
-  ${Follow.renderNotSelling(follow, { state: fuState, states, owners: people })}`, { active: 'callbacks' }));
+  ${Follow.renderNotSelling(follow, { state: fuState, states, owners: people, keyOf })}`, { active: 'callbacks' }));
 }));
 app.get('/callbacks', wrap(async (req, res) => {
   const t = today();
   const due = await listProps({ cb: 'due', sort: 'cbdesc' }, 2000);
   const soon = await db.query(`${PROP_SELECT} WHERE p.callback_date > $1::date AND p.callback_date <= $1::date + 14 ORDER BY p.callback_date`, [t]);
   const fuState = (nz(req.query.fu_state) || '').toUpperCase();
-  const { follow, states, people, links } = await followModel(fuState);
-  const dueGroups = People.collapseProperties(due.rows, people, links);
-  const soonGroups = People.collapseProperties(soon, people, links);
+  const { follow, states, people, links, keyOf } = await followModel(fuState);
+  const dueGroups = People.collapseProperties(due.rows, people, links, keyOf);
+  const soonGroups = People.collapseProperties(soon, people, links, keyOf);
   res.send(layout('Callbacks', `<h1>Callbacks</h1><p class="muted">Today is ${fmtDate(t)} (${esc(TZ)}). Scheduled callbacks below are only dates set when a call was logged. Imported spreadsheet callback dates stay last-contacted and are not listed here. Each owner is listed once.</p>
   <h2 id="due">Due or overdue <span class="muted">(${dueGroups.length}, most recent first)</span></h2>${groupedPropertyRows(dueGroups, { list: { from: 'cbdue', fu_state: fuState } })}
   <h2 id="soon">Next 14 days <span class="muted">(${soonGroups.length})</span></h2>${groupedPropertyRows(soonGroups, { list: { from: 'cbsoon', fu_state: fuState } })}
-  ${Follow.renderFollowUps(follow, { state: fuState, states, owners: people })}`, { active: 'callbacks' }));
+  ${Follow.renderFollowUps(follow, { state: fuState, states, owners: people, keyOf })}`, { active: 'callbacks' }));
 }));
 
 function fmtStamp(d) {
@@ -447,6 +455,7 @@ app.post('/properties', wrap(async (req, res) => {
     }
     return p.id;
   });
+  People.invalidate();
   res.redirect('/properties/' + id);
 }));
 function contextQuery(src) {
@@ -467,8 +476,8 @@ function dedupeIds(rows) {
   return out;
 }
 async function ownerRowsForNav(rows) {
-  const { owners, links } = await People.loadPeople(db);
-  return People.collapseProperties(rows, owners, links).map((row) => ({ id: row.propertyId || row.id, address: row.address || '' }));
+  const { owners, links, keyOf } = await People.loadPeople(db);
+  return People.collapseProperties(rows, owners, links, keyOf).map((row) => ({ id: row.propertyId || row.id, address: row.address || '' }));
 }
 async function callbackSection(ret, extra = {}) {
   if (ret.from === 'cbdue') {
@@ -501,8 +510,8 @@ async function callbackSection(ret, extra = {}) {
     return db.query(`SELECT p.id, p.address FROM properties p WHERE ${where.join(' AND ')} ORDER BY p.lead_at DESC NULLS LAST, p.id DESC`, params);
   }
   if (ret.from === 'cb' || ret.from === 'cbhide') {
-    const { follow, people } = await followModel(ret.fu_state || '');
-    const rows = People.collapseByOwner(ret.from === 'cbhide' ? follow.excluded : follow.ranked, people);
+    const { follow, people, keyOf } = await followModel(ret.fu_state || '');
+    const rows = People.collapseByOwner(ret.from === 'cbhide' ? follow.excluded : follow.ranked, people, keyOf);
     return rows.map((row) => ({ id: row.propertyId, address: row.address || '' }));
   }
   if (ret.from === 'bn' && ret.bn_id) {
@@ -516,8 +525,8 @@ async function callbackSection(ret, extra = {}) {
     const [b] = await Buyers.loadBuyers(db, { id: ret.bid });
     return dedupeIds((b && b.purchases || []).filter((c) => c.property_id).map((c) => ({ id: c.property_id, address: c.address })));
   }
-  const { follow, people } = await followModel(ret.fu_state || '');
-  const rows = People.collapseByOwner(ret.from === 'cbhide' ? follow.excluded : follow.ranked, people);
+  const { follow, people, keyOf } = await followModel(ret.fu_state || '');
+  const rows = People.collapseByOwner(ret.from === 'cbhide' ? follow.excluded : follow.ranked, people, keyOf);
   return rows.map((row) => ({ id: row.propertyId, address: row.address || '' }));
 }
 function propArrow(dir, row, f) {
@@ -563,8 +572,8 @@ app.get('/properties/:id', wrap(async (req, res) => {
       originBack = `<p class="back-origin"><a class="back-callbacks" href="/properties/${orig.id}${backQs}">← Back to ${esc(orig.address)}</a></p>`;
     }
   }
-  const bundle = await People.loadPeople(db);
-  const alsoGroups = People.alsoApplies(p.id, p.owners, bundle.owners, bundle.links);
+  const bundle = await People.loadRelated(db, p.owners);
+  const alsoGroups = People.alsoApplies(p.id, p.owners, bundle.owners, bundle.links, bundle.keyOf);
   const otherQs = qs({ ...pageQuery, ret: p.id });
   const othersOf = new Map(alsoGroups.map((g) => [g.ownerId, g.properties]));
   const alsoHtml = alsoGroups.map((g) => `<div class="also-apply wide" data-also-owner="${g.ownerId}"><span class="small">Also applies to:</span>${g.properties.map((prop) => `<label class="chk"><input type="checkbox" name="also_${prop.id}" value="1" checked> ${esc(prop.address)}${prop.city ? ', ' + esc(prop.city) : ''}</label>`).join('')}</div>`).join('');
@@ -646,6 +655,7 @@ app.post('/properties/:id/delete', wrap(async (req, res) => {
     const walk = Return.neighborsInCallbackList(rows, id, ret.cb_at);
     const target = Nav.recordAfterDelete(walk);
     await db.query('DELETE FROM properties WHERE id=$1', [id]);
+    People.invalidate();
     if (!target) return res.redirect(Return.listUrl({ ...ret, cb_at: null }, null));
     const at = walk.next && Number(target.id) === Number(walk.next.id) ? walk.index : Math.max(0, walk.index - 1);
     return res.redirect(`/properties/${target.id}${qs({ ...list, ...Return.returnQuery({ ...ret, cb_at: at }) })}`);
@@ -653,6 +663,7 @@ app.post('/properties/:id/delete', wrap(async (req, res) => {
   const walk = await neighborNav(id, list);
   const target = Nav.recordAfterDelete(walk);
   await db.query('DELETE FROM properties WHERE id=$1', [id]);
+  People.invalidate();
   res.redirect(target ? `/properties/${target.id}${qs(list)}` : '/properties' + qs(list));
 }));
 app.post('/properties/:id/lead', wrap(async (req, res) => {
@@ -663,6 +674,7 @@ app.post('/properties/:id/lead', wrap(async (req, res) => {
   if (existing && !existing.lead_at) {
     await db.query('UPDATE properties SET lead_at=now(), lead_note=$2, updated_at=now() WHERE id=$1', [id, short]);
     await db.query(`INSERT INTO activities (property_id, kind, notes, activity_date) VALUES ($1, 'lead', $2, $3)`, [id, short || 'Marked as lead', today()]);
+    People.invalidate();
   }
   res.redirect('/properties/' + id + qs(contextQuery(req.body)));
 }));
@@ -691,9 +703,10 @@ app.post('/properties/:id/activities', wrap(async (req, res) => {
       await applyCallTouch(t, id, { date, outcome, cb, clear: b.clear_cb === '1' });
       const ownerId = parseInt(b.owner_id, 10) || 0;
       if (ownerId) {
-        const bundle = await People.loadPeople(t);
-        const owner = bundle.owners.find((o) => Number(o.id) === ownerId) || { id: ownerId, name: '' };
-        const [group] = People.alsoApplies(id, [owner], bundle.owners, bundle.links);
+        const [ownerRow] = await t.query('SELECT id, name, entity, phone1, phone2, phone3, phone4, phone5 FROM owners WHERE id=$1', [ownerId]);
+        const owner = ownerRow || { id: ownerId, name: '' };
+        const bundle = await People.loadRelated(t, [owner]);
+        const [group] = People.alsoApplies(id, [owner], bundle.owners, bundle.links, bundle.keyOf);
         const wanted = new Set(People.checkedAlso(b));
         const who = owner.name || owner.entity || 'the owner';
         for (const prop of (group && group.properties) || []) {
@@ -705,6 +718,7 @@ app.post('/properties/:id/activities', wrap(async (req, res) => {
       }
     } else await t.query('UPDATE properties SET updated_at=now() WHERE id=$1', [id]);
   });
+  People.invalidate();
   const saved = contextQuery(b);
   if (kind === 'call' && b.log_comp === '1') {
     const extra = { ...saved };
@@ -725,6 +739,7 @@ app.post('/properties/:id/activities/:aid/date', wrap(async (req, res) => {
   if (row.kind !== 'call') return res.status(400).send(layout('Edit date', `<h1>That date stays as recorded</h1><p>Only a logged call can be redated. Import rows are left alone.</p><p><a href="${esc(back)}">Back</a></p>`));
   // last_contacted is stored when a call is logged (and by import). It is not derived from activity dates, so a redate does not rewrite it.
   await db.query('UPDATE activities SET activity_date=$1 WHERE id=$2 AND property_id=$3 AND kind=$4', [date, aid, id, 'call']);
+  People.invalidate();
   res.redirect(back);
 }));
 app.post('/properties/:id/activities/:aid/delete', wrap(async (req, res) => {
@@ -735,6 +750,7 @@ app.post('/properties/:id/activities/:aid/delete', wrap(async (req, res) => {
   if (!row) return res.status(404).send(layout('Not found', `<h1>Activity not found</h1><p><a href="${esc(back)}">Back</a></p>`));
   if (row.kind !== 'call' || row.parent_activity_id) return res.status(400).send(layout('Delete call', `<h1>That call stays in the log</h1><p>Only the original logged call can be deleted. Import rows are left alone.</p><p><a href="${esc(back)}">Back</a></p>`));
   await db.query('DELETE FROM activities WHERE id=$1 AND property_id=$2 AND kind=$3 AND parent_activity_id IS NULL', [aid, id, 'call']);
+  People.invalidate();
   res.redirect(back);
 }));
 app.post('/properties/:id/owners', wrap(async (req, res) => {
@@ -747,6 +763,7 @@ app.post('/properties/:id/owners', wrap(async (req, res) => {
       [nz(b.name), nz(b.entity), nz(b.age), nz(b.phone1), nz(b.phone2), nz(b.email), nz(b.mailing_address)]);
     await t.query('INSERT INTO property_owners VALUES ($1,$2)', [id, o.id]);
   });
+  People.invalidate();
   res.redirect('/properties/' + id + listQs);
 }));
 app.get('/properties/:id/link-owner', wrap(async (req, res) => {
@@ -756,8 +773,8 @@ app.get('/properties/:id/link-owner', wrap(async (req, res) => {
   res.send(layout('Link owner', `<p class="crumbs"><a href="/properties/${id}">Back to property</a></p><h1>Link an existing owner</h1><p class="muted">Matches for “${esc(q)}”</p>
   <ul class="acts">${owners.map((o) => `<li><form method="post" action="/properties/${id}/owners/${o.id}/link" class="inline"><button>Link</button></form> <b>${esc(o.name || '')}</b> <span class="muted">${esc(o.entity || '')} ${esc(o.phone1 || '')}</span></li>`).join('') || '<li class="muted">No matches.</li>'}</ul>`));
 }));
-app.post('/properties/:id/owners/:oid/link', wrap(async (req, res) => { await db.query('INSERT INTO property_owners VALUES ($1,$2) ON CONFLICT DO NOTHING', [parseInt(req.params.id), parseInt(req.params.oid)]); res.redirect('/properties/' + parseInt(req.params.id)); }));
-app.post('/properties/:id/owners/:oid/unlink', wrap(async (req, res) => { await db.query('DELETE FROM property_owners WHERE property_id=$1 AND owner_id=$2', [parseInt(req.params.id), parseInt(req.params.oid)]); res.redirect('/properties/' + parseInt(req.params.id) + qs(contextQuery(req.body))); }));
+app.post('/properties/:id/owners/:oid/link', wrap(async (req, res) => { await db.query('INSERT INTO property_owners VALUES ($1,$2) ON CONFLICT DO NOTHING', [parseInt(req.params.id), parseInt(req.params.oid)]); People.invalidate(); res.redirect('/properties/' + parseInt(req.params.id)); }));
+app.post('/properties/:id/owners/:oid/unlink', wrap(async (req, res) => { await db.query('DELETE FROM property_owners WHERE property_id=$1 AND owner_id=$2', [parseInt(req.params.id), parseInt(req.params.oid)]); People.invalidate(); res.redirect('/properties/' + parseInt(req.params.id) + qs(contextQuery(req.body))); }));
 
 // ---------- owners ----------
 app.get('/owners', wrap(async (req, res) => {
@@ -788,6 +805,7 @@ const safeBack = (b) => (typeof b === 'string' && /^\/[a-z]/.test(b) ? b : null)
 app.get('/owners/new', (req, res) => res.send(layout('New owner', `<h1>New owner</h1>${ownerForm({}, '/owners')}`, { active: 'owners' })));
 app.post('/owners', wrap(async (req, res) => {
   const [o] = await db.query('INSERT INTO owners (name, entity, age, birth_year, age_source, age_confidence, phone1, phone2, phone3, phone4, phone5, email, website, mailing_address, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id', ownerVals(req.body));
+  People.invalidate();
   res.redirect('/owners/' + o.id);
 }));
 app.get('/owners/:id', wrap(async (req, res) => {
@@ -806,9 +824,10 @@ app.get('/owners/:id/edit', wrap(async (req, res) => {
 app.post('/owners/:id', wrap(async (req, res) => {
   const id = parseInt(req.params.id);
   await db.query('UPDATE owners SET name=$1, entity=$2, age=$3, birth_year=$4, age_source=$5, age_confidence=$6, phone1=$7, phone2=$8, phone3=$9, phone4=$10, phone5=$11, email=$12, website=$13, mailing_address=$14, notes=$15, updated_at=now() WHERE id=$16', [...ownerVals(req.body), id]);
+  People.invalidate();
   res.redirect(safeBack(req.body.back) || '/owners/' + id);
 }));
-app.post('/owners/:id/delete', wrap(async (req, res) => { await db.query('DELETE FROM owners WHERE id=$1', [parseInt(req.params.id)]); res.redirect('/owners'); }));
+app.post('/owners/:id/delete', wrap(async (req, res) => { await db.query('DELETE FROM owners WHERE id=$1', [parseInt(req.params.id)]); People.invalidate(); res.redirect('/owners'); }));
 
 // ---------- counts (used by scripts/verify.py) ----------
 app.get('/api/counts', wrap(async (req, res) => {

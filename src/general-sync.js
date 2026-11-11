@@ -67,7 +67,11 @@ function extract(file, tab = 'General') {
 class DryRun extends Error { constructor(r) { super('dry run'); this.result = r; } }
 async function apply(db, data, { label = 'sync', dryRun = false } = {}) {
   await db.exec(SCHEMA);
-  try { return await db.tx(async (t) => { const r = await applyTx(t, data, label); if (dryRun) throw new DryRun(r); return r; }); }
+  try {
+    const result = await db.tx(async (t) => { const r = await applyTx(t, data, label); if (dryRun) throw new DryRun(r); return r; });
+    require('./same-person').invalidate();
+    return result;
+  }
   catch (e) { if (e instanceof DryRun) return { dry_run: true, ...e.result }; throw e; }
 }
 async function applyTx(t, data, label) {

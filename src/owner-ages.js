@@ -120,6 +120,7 @@ async function applyResearchAges(db, rows, opts = {}) {
         await t.query('UPDATE owners SET birth_year=$1, age_source=$2, age_confidence=$3, updated_at=now() WHERE id=$4 AND birth_year IS NULL', [u.birthYear, u.source, u.confidence, u.ownerId]);
       }
     });
+    require('./same-person').invalidate();
   }
   return { dryRun: !!opts.dryRun, updates: plan.updates, skipped: plan.skipped, updated: plan.updates.length };
 }
@@ -144,6 +145,7 @@ async function importOwnerAges(db, rows, opts = {}) {
     found.owner.birth_year = year;
     stats.updated += 1;
   }
+  if (!opts.dryRun && stats.updated) require('./same-person').invalidate();
   return stats;
 }
 

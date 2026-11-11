@@ -51,9 +51,24 @@ function personIndex(owners) {
     if (pa > pb) { const swap = pa; pa = pb; pb = swap; }
     parent.set(pb, pa);
   };
-  for (let i = 0; i < list.length; i++) {
-    for (let j = i + 1; j < list.length; j++) {
-      if (samePerson(list[i], list[j])) union(Number(list[i].id), Number(list[j].id));
+  // Same-person requires the same normalized name, so each name is its own bucket.
+  // Inside a bucket, a shared phone (including a chain of shared phones) joins the records.
+  const buckets = new Map();
+  for (const owner of list) {
+    const name = normName(owner.name);
+    if (!name) continue;
+    if (!buckets.has(name)) buckets.set(name, []);
+    buckets.get(name).push(owner);
+  }
+  for (const group of buckets.values()) {
+    const byPhone = new Map();
+    for (const owner of group) {
+      const id = Number(owner.id);
+      for (const phone of phoneKeys(owner)) {
+        const prev = byPhone.get(phone);
+        if (prev) union(prev, id);
+        else byPhone.set(phone, id);
+      }
     }
   }
   const keyOf = new Map();
@@ -63,19 +78,19 @@ function personIndex(owners) {
   }
   return keyOf;
 }
-function collapseByOwner(rows, owners) {
-  const keyOf = personIndex(owners);
+function collapseByOwner(rows, owners, keyOf) {
+  const index = keyOf || personIndex(owners);
   const groups = new Map();
   const order = [];
-  (rows || []).forEach((row, index) => {
+  (rows || []).forEach((row, position) => {
     const propertyId = Number(row.propertyId || row.id);
     const ownerId = Number(row.ownerId || row.owner_id) || 0;
-    const key = row.personKey || (ownerId && keyOf.has(ownerId) ? keyOf.get(ownerId) : 'solo:' + propertyId + ':' + index);
+    const key = row.personKey || (ownerId && index.has(ownerId) ? index.get(ownerId) : 'solo:' + propertyId + ':' + position);
     if (!groups.has(key)) {
       groups.set(key, []);
       order.push(key);
     }
-    groups.get(key).push({ ...row, propertyId, ownerId, _i: index });
+    groups.get(key).push({ ...row, propertyId, ownerId, _i: position });
   });
   return order.map((key) => {
     const seen = new Set();
@@ -96,8 +111,8 @@ function collapseByOwner(rows, owners) {
     return { ...primary, id: primary.propertyId || primary.id, also };
   });
 }
-function collapseProperties(rows, owners, links) {
-  const keyOf = personIndex(owners);
+function collapseProperties(rows, owners, links, keyOf) {
+  const index = keyOf || personIndex(owners);
   const byProp = new Map();
   for (const link of links || []) {
     const pid = Number(link.property_id);
@@ -105,28 +120,28 @@ function collapseProperties(rows, owners, links) {
     byProp.get(pid).push(Number(link.owner_id));
   }
   const expanded = [];
-  (rows || []).forEach((row, index) => {
+  (rows || []).forEach((row, position) => {
     const pid = Number(row.id || row.propertyId);
     const keys = [];
     const seen = new Set();
     for (const oid of byProp.get(pid) || []) {
-      const key = keyOf.get(oid);
+      const key = index.get(oid);
       if (!key || seen.has(key)) continue;
       seen.add(key);
       keys.push({ key, oid });
     }
-    if (!keys.length) expanded.push({ ...row, propertyId: pid, ownerId: 0, personKey: 'solo:' + pid, _i: index });
-    else for (const item of keys) expanded.push({ ...row, propertyId: pid, ownerId: item.oid, personKey: item.key, _i: index });
+    if (!keys.length) expanded.push({ ...row, propertyId: pid, ownerId: 0, personKey: 'solo:' + pid, _i: position });
+    else for (const item of keys) expanded.push({ ...row, propertyId: pid, ownerId: item.oid, personKey: item.key, _i: position });
   });
-  return collapseByOwner(expanded, owners);
+  return collapseByOwner(expanded, owners, index);
 }
-function alsoApplies(propertyId, ownersOnProperty, owners, links) {
-  const keyOf = personIndex(owners);
+function alsoApplies(propertyId, ownersOnProperty, owners, links, keyOf) {
+  const index = keyOf || personIndex(owners);
   const sameIds = (ownerId) => {
-    const key = keyOf.get(Number(ownerId));
+    const key = index.get(Number(ownerId));
     const ids = new Set();
     if (!key) return ids;
-    for (const [id, person] of keyOf) if (person === key) ids.add(id);
+    for (const [id, person] of index) if (person === key) ids.add(id);
     return ids;
   };
   return (ownersOnProperty || []).map((owner) => {
@@ -150,12 +165,32 @@ function checkedAlso(body) {
   }
   return ids;
 }
+const CACHE_MS = 45000;
+let cache = null;
+function invalidate() { cache = null; }
 async function loadPeople(db) {
+  const now = Date.now();
+  if (cache && now - cache.at < CACHE_MS) return cache;
   const owners = await db.query('SELECT id, name, entity, phone1, phone2, phone3, phone4, phone5 FROM owners');
   const links = await db.query(`SELECT po.property_id, po.owner_id, p.address, p.city, p.state
     FROM property_owners po JOIN properties p ON p.id = po.property_id`);
-  return { owners, links };
+  cache = { at: now, owners, links, keyOf: personIndex(owners) };
+  return cache;
+}
+const NAME_SQL = `btrim(regexp_replace(regexp_replace(lower(coalesce(name,'')), '[^a-z0-9]+', ' ', 'g'), '\\s+', ' ', 'g'))`;
+async function loadRelated(db, ownersOnProperty) {
+  const names = [...new Set((ownersOnProperty || []).map((owner) => normName(owner.name)).filter(Boolean))];
+  const owners = names.length
+    ? await db.query(`SELECT id, name, entity, phone1, phone2, phone3, phone4, phone5 FROM owners WHERE ${NAME_SQL} = ANY($1::text[])`, [names])
+    : (ownersOnProperty || []).map((owner) => ({ ...owner }));
+  const ids = [...new Set(owners.map((owner) => Number(owner.id)).filter(Boolean))];
+  const links = ids.length
+    ? await db.query(`SELECT po.property_id, po.owner_id, p.address, p.city, p.state
+      FROM property_owners po JOIN properties p ON p.id = po.property_id
+      WHERE po.owner_id = ANY($1::int[])`, [ids])
+    : [];
+  return { owners, links, keyOf: personIndex(owners) };
 }
 module.exports = {
-  normName, phoneKeys, samePerson, personIndex, collapseByOwner, collapseProperties, alsoApplies, checkedAlso, loadPeople,
+  normName, phoneKeys, samePerson, personIndex, collapseByOwner, collapseProperties, alsoApplies, checkedAlso, loadPeople, loadRelated, invalidate, CACHE_MS,
 };

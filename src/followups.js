@@ -490,13 +490,14 @@ function followFilter(state, states, action) {
     <label class="fl">State <select name="fu_state"><option value="">All states</option>${opts}</select></label>
     <button>Filter</button> <a class="btn ghost" href="${action}">Reset</a></form>`;
 }
-function shownModel(model, owners) {
+function shownModel(model, owners, keyOf) {
   if (!owners) return model;
   const People = require('./same-person');
+  const index = keyOf || People.personIndex(owners);
   return {
     ...model,
-    ranked: People.collapseByOwner(model.ranked, owners),
-    excluded: People.collapseByOwner(model.excluded, owners),
+    ranked: People.collapseByOwner(model.ranked, owners, index),
+    excluded: People.collapseByOwner(model.excluded, owners, index),
   };
 }
 function alsoOwns(rows, esc) {
@@ -505,9 +506,9 @@ function alsoOwns(rows, esc) {
   const links = list.map((row) => `<a href="/properties/${row.propertyId}">${esc(row.address || 'Property')}</a>`).join(', ');
   return `<div class="also-owns small">Also owns: ${list.length} propert${list.length === 1 ? 'y' : 'ies'} ${links}</div>`;
 }
-function renderFollowUps(model, { state, states, owners }) {
+function renderFollowUps(model, { state, states, owners, keyOf }) {
   const { esc, fmtDate } = require('./views');
-  const shown = shownModel(model, owners);
+  const shown = shownModel(model, owners, keyOf);
   const hidden = shown.excluded.length
     ? `<p class="muted small"><a href="/callbacks/not-selling${state ? `?fu_state=${encodeURIComponent(state)}` : ''}">${shown.excluded.length} clearly not selling, hidden</a></p>`
     : '';
@@ -527,9 +528,9 @@ function renderFollowUps(model, { state, states, owners }) {
   ${shown.ranked.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th class="num">Score</th><th>Owner</th><th>Property</th><th>Why</th><th>Last talked</th><th class="num">Days</th><th>Note</th></tr></thead><tbody>${shown.ranked.map(row).join('')}</tbody></table></div>` : '<p class="muted">No one in this set.</p>'}
   ${hidden}`;
 }
-function renderNotSelling(model, { state, states, owners }) {
+function renderNotSelling(model, { state, states, owners, keyOf }) {
   const { esc, fmtDate } = require('./views');
-  const shown = shownModel(model, owners);
+  const shown = shownModel(model, owners, keyOf);
   const row = (r, i) => `<tr id="p-${r.propertyId}">
     <td>${esc(r.ownerName || 'No owner on file')}</td>
     <td><a href="/properties/${r.propertyId}?from=cbhide${state ? `&fu_state=${encodeURIComponent(state)}` : ''}&cb_at=${i}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div>${alsoOwns(r.also, esc)}</td>
