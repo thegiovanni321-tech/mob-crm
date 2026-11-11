@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS activities (
 CREATE INDEX IF NOT EXISTS idx_prop_state ON properties(state);
 CREATE INDEX IF NOT EXISTS idx_prop_cb ON properties(callback_date);
 CREATE INDEX IF NOT EXISTS idx_act_prop ON activities(property_id);
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS parent_activity_id INT REFERENCES activities(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_po_owner ON property_owners(owner_id);
 CREATE INDEX IF NOT EXISTS idx_pt_tenant ON property_tenants(tenant_id);
 ALTER TABLE properties ADD COLUMN IF NOT EXISTS lat NUMERIC;

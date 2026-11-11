@@ -409,6 +409,7 @@ function buildFollowUps({ today, properties, activities, state }) {
       for (const reason of reasons) {
         excluded.push({
           propertyId: p.id, address: p.address, city: p.city, state: p.state,
+          ownerId: owner ? owner.id : null,
           ownerName: owner ? (owner.name || '') : '', ownerEntity: owner ? (owner.entity || '') : '',
           phrase: reason.phrase, snippet: reason.snippet || '', date: latest.date,
         });
@@ -472,6 +473,7 @@ function buildFollowUps({ today, properties, activities, state }) {
     }
     ranked.push({
       propertyId: p.id, address: p.address, city: p.city, state: p.state,
+      ownerId: owner ? owner.id : null,
       ownerName: owner ? (owner.name || '') : '', ownerEntity: owner ? (owner.entity || '') : '',
       lastTalked: latest.date, daysSince: days, daysOverdue: overdue,
       score: tags.reduce((n, t) => n + t.points, 0), tags, snippet: snippetText,
@@ -488,37 +490,55 @@ function followFilter(state, states, action) {
     <label class="fl">State <select name="fu_state"><option value="">All states</option>${opts}</select></label>
     <button>Filter</button> <a class="btn ghost" href="${action}">Reset</a></form>`;
 }
-function renderFollowUps(model, { state, states }) {
+function shownModel(model, owners) {
+  if (!owners) return model;
+  const People = require('./same-person');
+  return {
+    ...model,
+    ranked: People.collapseByOwner(model.ranked, owners),
+    excluded: People.collapseByOwner(model.excluded, owners),
+  };
+}
+function alsoOwns(rows, esc) {
+  const list = rows || [];
+  if (!list.length) return '';
+  const links = list.map((row) => `<a href="/properties/${row.propertyId}">${esc(row.address || 'Property')}</a>`).join(', ');
+  return `<div class="also-owns small">Also owns: ${list.length} propert${list.length === 1 ? 'y' : 'ies'} ${links}</div>`;
+}
+function renderFollowUps(model, { state, states, owners }) {
   const { esc, fmtDate } = require('./views');
-  const hidden = model.excluded.length
-    ? `<p class="muted small"><a href="/callbacks/not-selling${state ? `?fu_state=${encodeURIComponent(state)}` : ''}">${model.excluded.length} clearly not selling, hidden</a></p>`
+  const shown = shownModel(model, owners);
+  const hidden = shown.excluded.length
+    ? `<p class="muted small"><a href="/callbacks/not-selling${state ? `?fu_state=${encodeURIComponent(state)}` : ''}">${shown.excluded.length} clearly not selling, hidden</a></p>`
     : '';
   const tags = (r) => r.tags.map((t) => `<span class="badge">${esc(t.label)}${t.points ? ` <em>${t.points}</em>` : ''}</span>`).join(' ');
   const row = (r, i) => `<tr id="p-${r.propertyId}">
     <td class="num"><b>${r.score}</b></td>
     <td>${esc(r.ownerName || 'No owner on file')}${r.ownerEntity ? `<div class="muted small">${esc(r.ownerEntity)}</div>` : ''}</td>
-    <td><a href="/properties/${r.propertyId}?from=cb${state ? `&fu_state=${encodeURIComponent(state)}` : ''}&cb_at=${i}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
+    <td><a href="/properties/${r.propertyId}?from=cb${state ? `&fu_state=${encodeURIComponent(state)}` : ''}&cb_at=${i}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div>${alsoOwns(r.also, esc)}</td>
     <td class="small">${tags(r)}</td>
     <td>${esc(fmtDate(r.lastTalked))}</td>
     <td class="num">${r.daysSince}</td>
     <td class="small">${esc(r.snippet || '')}</td></tr>`;
   return `${followFilter(state, states, '/callbacks')}
-  <h2 id="likely">Most likely to sell <span class="muted">(${model.ranked.length})</span></h2>
+  <h2 id="likely">Most likely to sell <span class="muted">(${shown.ranked.length})</span></h2>
   <p class="muted small">Ranked when the page is read. Explicit sell interest and a past-due callback come first, then age 75+ and 65+ from a birth year with high or medium confidence, then other signals already stored on the record, then a neutral talk older than ${model.staleDays} days. Clear “not selling” or “not interested” notes are left off this list. A future scheduled callback stays in the lists above. A new logged call drops the row until it qualifies again.</p>
-  ${model.ranked.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th class="num">Score</th><th>Owner</th><th>Property</th><th>Why</th><th>Last talked</th><th class="num">Days</th><th>Note</th></tr></thead><tbody>${model.ranked.map(row).join('')}</tbody></table></div>` : '<p class="muted">No one in this set.</p>'}
+  <p class="muted small">Each owner is listed once. The link is their highest-ranked property.</p>
+  ${shown.ranked.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th class="num">Score</th><th>Owner</th><th>Property</th><th>Why</th><th>Last talked</th><th class="num">Days</th><th>Note</th></tr></thead><tbody>${shown.ranked.map(row).join('')}</tbody></table></div>` : '<p class="muted">No one in this set.</p>'}
   ${hidden}`;
 }
-function renderNotSelling(model, { state, states }) {
+function renderNotSelling(model, { state, states, owners }) {
   const { esc, fmtDate } = require('./views');
+  const shown = shownModel(model, owners);
   const row = (r, i) => `<tr id="p-${r.propertyId}">
     <td>${esc(r.ownerName || 'No owner on file')}</td>
-    <td><a href="/properties/${r.propertyId}?from=cbhide${state ? `&fu_state=${encodeURIComponent(state)}` : ''}&cb_at=${i}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div></td>
+    <td><a href="/properties/${r.propertyId}?from=cbhide${state ? `&fu_state=${encodeURIComponent(state)}` : ''}&cb_at=${i}"><b>${esc(r.address || '')}</b></a><div class="muted small">${esc([r.city, r.state].filter(Boolean).join(', '))}</div>${alsoOwns(r.also, esc)}</td>
     <td class="small"><b>${esc(r.phrase || '')}</b><div>${esc(r.snippet || '')}</div></td>
     <td>${esc(fmtDate(r.date))}</td></tr>`;
   return `${followFilter(state, states, '/callbacks/not-selling')}
-  <h2>Clearly not selling <span class="muted">(${model.excluded.length})</span></h2>
+  <h2>Clearly not selling <span class="muted">(${shown.excluded.length})</span></h2>
   <p class="muted small">Hidden from Callbacks. A later conversation with a real sell phrase puts the record back on Most likely to sell. Nothing here is written back to the notes.</p>
-  ${model.excluded.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Owner</th><th>Property</th><th>Why it is hidden</th><th>Date</th></tr></thead><tbody>${model.excluded.map(row).join('')}</tbody></table></div>` : '<p class="muted">None in this set.</p>'}`;
+  ${shown.excluded.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Owner</th><th>Property</th><th>Why it is hidden</th><th>Date</th></tr></thead><tbody>${shown.excluded.map(row).join('')}</tbody></table></div>` : '<p class="muted">None in this set.</p>'}`;
 }
 
 module.exports = { STALE_DAYS, SIGNALS, classifyText, buildFollowUps, daysBetween, isTalk, renderFollowUps, renderNotSelling, qualifyingAge };

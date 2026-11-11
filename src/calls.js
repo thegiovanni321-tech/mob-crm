@@ -10,9 +10,14 @@ const TZ = 'America/New_York';
 // today in the browser before submit, so a tab left open overnight is not filed yesterday.
 // Notes do not. Imported Talked rows are past conversations and count on their activity date.
 // Imported Called rows are spreadsheet last-contacted dates, not logged calls.
+// A call logged once for an owner who has several properties is stored on each property,
+// and the copies point at the original. Only the original counts.
 const CALL_WHERE = `(
-  kind = 'call'
-  OR (kind = 'import' AND outcome = 'Talked')
+  parent_activity_id IS NULL
+  AND (
+    kind = 'call'
+    OR (kind = 'import' AND outcome = 'Talked')
+  )
 )`;
 const CALL_DAY = `COALESCE(activity_date, (created_at AT TIME ZONE '${TZ}')::date)`;
 

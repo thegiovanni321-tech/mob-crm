@@ -3,12 +3,13 @@ const multer = require('multer');
 const { migrate } = require('./db');
 const auth = require('./auth');
 const V = require('./views');
-const { esc, layout, propertyRows, filterForm, badge, newBadge, leadBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES } = V;
+const { esc, layout, propertyRows, groupedPropertyRows, filterForm, badge, newBadge, leadBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES } = V;
 const { IS_NEW_SQL } = require('./property-flags');
 const Nav = require('./property-nav');
 const Follow = require('./followups');
 const Ages = require('./owner-ages');
 const Return = require('./callback-return');
+const People = require('./same-person');
 const TZ = process.env.TZ_NAME || 'America/New_York';
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const plusDays = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -264,24 +265,27 @@ async function followModel(fuState) {
     p.yearsRemaining = years;
   }
   const states = [...new Set(fuProps.map((p) => p.state).filter(Boolean))].sort();
-  return { t, states, follow: Follow.buildFollowUps({ today: t, properties: fuProps, activities: fuActs, state: fuState }) };
+  const peopleBundle = await People.loadPeople(db);
+  return { t, states, people: peopleBundle.owners, links: peopleBundle.links, follow: Follow.buildFollowUps({ today: t, properties: fuProps, activities: fuActs, state: fuState }) };
 }
 app.get('/callbacks/not-selling', wrap(async (req, res) => {
   const fuState = (nz(req.query.fu_state) || '').toUpperCase();
-  const { follow, states } = await followModel(fuState);
+  const { follow, states, people } = await followModel(fuState);
   res.send(layout('Not selling', `<h1>Not selling</h1><p class="muted"><a href="/callbacks">Back to Callbacks</a></p>
-  ${Follow.renderNotSelling(follow, { state: fuState, states })}`, { active: 'callbacks' }));
+  ${Follow.renderNotSelling(follow, { state: fuState, states, owners: people })}`, { active: 'callbacks' }));
 }));
 app.get('/callbacks', wrap(async (req, res) => {
   const t = today();
   const due = await listProps({ cb: 'due', sort: 'cbdesc' }, 2000);
   const soon = await db.query(`${PROP_SELECT} WHERE p.callback_date > $1::date AND p.callback_date <= $1::date + 14 ORDER BY p.callback_date`, [t]);
   const fuState = (nz(req.query.fu_state) || '').toUpperCase();
-  const { follow, states } = await followModel(fuState);
-  res.send(layout('Callbacks', `<h1>Callbacks</h1><p class="muted">Today is ${fmtDate(t)} (${esc(TZ)}). Scheduled callbacks below are only dates set when a call was logged. Imported spreadsheet callback dates stay last-contacted and are not listed here.</p>
-  <h2 id="due">Due or overdue <span class="muted">(${due.n}, most recent first)</span></h2>${propertyRows(due.rows, { list: { from: 'cbdue', fu_state: fuState } })}
-  <h2 id="soon">Next 14 days <span class="muted">(${soon.length})</span></h2>${propertyRows(soon, { list: { from: 'cbsoon', fu_state: fuState } })}
-  ${Follow.renderFollowUps(follow, { state: fuState, states })}`, { active: 'callbacks' }));
+  const { follow, states, people, links } = await followModel(fuState);
+  const dueGroups = People.collapseProperties(due.rows, people, links);
+  const soonGroups = People.collapseProperties(soon, people, links);
+  res.send(layout('Callbacks', `<h1>Callbacks</h1><p class="muted">Today is ${fmtDate(t)} (${esc(TZ)}). Scheduled callbacks below are only dates set when a call was logged. Imported spreadsheet callback dates stay last-contacted and are not listed here. Each owner is listed once.</p>
+  <h2 id="due">Due or overdue <span class="muted">(${dueGroups.length}, most recent first)</span></h2>${groupedPropertyRows(dueGroups, { list: { from: 'cbdue', fu_state: fuState } })}
+  <h2 id="soon">Next 14 days <span class="muted">(${soonGroups.length})</span></h2>${groupedPropertyRows(soonGroups, { list: { from: 'cbsoon', fu_state: fuState } })}
+  ${Follow.renderFollowUps(follow, { state: fuState, states, owners: people })}`, { active: 'callbacks' }));
 }));
 
 function fmtStamp(d) {
@@ -388,7 +392,8 @@ function activityList(acts, withProp = false, edit = null) {
   <span class="muted small">${a.activity_date ? fmtDate(a.activity_date) : a.kind === 'import' ? 'date not recorded' : ''}${a.owner_name ? ' · ' + esc(a.owner_name) : ''}${a.callback_date ? ' · callback ' + fmtDate(a.callback_date) : ''}</span></div>
   ${withProp ? `<div class="small"><a href="/properties/${a.property_id}">${esc(a.address)}, ${esc(a.city || '')} ${esc(a.state || '')}</a></div>` : ''}
   ${a.notes ? `<div class="pre small">${esc(a.notes)}</div>` : ''}
-  ${canEdit && a.kind === 'call' ? `<form method="post" action="/properties/${edit.propertyId}/activities/${a.id}/date" class="edit-date">${edit.hidden || ''}<label class="small">Edit date <input type="date" name="activity_date" value="${isoDate(a.activity_date)}" title="Eastern Time date" required></label> <button class="btn ghost small">Save</button></form>` : ''}</li>`).join('')}</ul>`;
+  ${canEdit && a.kind === 'call' ? `<form method="post" action="/properties/${edit.propertyId}/activities/${a.id}/date" class="edit-date">${edit.hidden || ''}<label class="small">Edit date <input type="date" name="activity_date" value="${isoDate(a.activity_date)}" title="Eastern Time date" required></label> <button class="btn ghost small">Save</button></form>` : ''}
+  ${canEdit && a.kind === 'call' && !a.parent_activity_id ? `<form method="post" action="/properties/${edit.propertyId}/activities/${a.id}/delete" class="inline" onsubmit="return confirm('Delete this call? Copies on the other properties of this owner will be deleted too.')">${edit.hidden || ''}<button class="btn ghost small">Delete call</button></form>` : ''}</li>`).join('')}</ul>`;
 }
 app.get('/properties/new', wrap(async (req, res) => {
   res.send(layout('New property', `<h1>New property</h1>${propertyForm({ status: 'New' }, await tenantList(), '/properties', req.query.tenant ? [String(req.query.tenant)] : [])}`, { active: 'properties' }));
@@ -460,14 +465,18 @@ function dedupeIds(rows) {
   }
   return out;
 }
+async function ownerRowsForNav(rows) {
+  const { owners, links } = await People.loadPeople(db);
+  return People.collapseProperties(rows, owners, links).map((row) => ({ id: row.propertyId || row.id, address: row.address || '' }));
+}
 async function callbackSection(ret, extra = {}) {
   if (ret.from === 'cbdue') {
     const { rows } = await listProps({ cb: 'due', sort: 'cbdesc' }, 2000);
-    return rows.map((r) => ({ id: r.id, address: r.address }));
+    return ownerRowsForNav(rows);
   }
   if (ret.from === 'cbsoon') {
     const soon = await db.query(`${PROP_SELECT} WHERE p.callback_date > $1::date AND p.callback_date <= $1::date + 14 ORDER BY p.callback_date`, [today()]);
-    return soon.map((r) => ({ id: r.id, address: r.address }));
+    return ownerRowsForNav(soon);
   }
   if (ret.from === 'listings') {
     const params = [];
@@ -490,14 +499,19 @@ async function callbackSection(ret, extra = {}) {
     }
     return db.query(`SELECT p.id, p.address FROM properties p WHERE ${where.join(' AND ')} ORDER BY p.lead_at DESC NULLS LAST, p.id DESC`, params);
   }
+  if (ret.from === 'cb' || ret.from === 'cbhide') {
+    const { follow, people } = await followModel(ret.fu_state || '');
+    const rows = People.collapseByOwner(ret.from === 'cbhide' ? follow.excluded : follow.ranked, people);
+    return rows.map((row) => ({ id: row.propertyId, address: row.address || '' }));
+  }
   if (ret.from === 'buyer' && ret.bid) {
     const Buyers = require('./buyers');
     const [b] = await Buyers.loadBuyers(db, { id: ret.bid });
     return dedupeIds((b && b.purchases || []).filter((c) => c.property_id).map((c) => ({ id: c.property_id, address: c.address })));
   }
-  const { follow } = await followModel(ret.fu_state || '');
-  const rows = ret.from === 'cbhide' ? follow.excluded : follow.ranked;
-  return rows.map((r) => ({ id: r.propertyId, address: r.address }));
+  const { follow, people } = await followModel(ret.fu_state || '');
+  const rows = People.collapseByOwner(ret.from === 'cbhide' ? follow.excluded : follow.ranked, people);
+  return rows.map((row) => ({ id: row.propertyId, address: row.address || '' }));
 }
 function propArrow(dir, row, f) {
   const label = dir === 'prev' ? 'Previous' : 'Next';
@@ -534,6 +548,9 @@ app.get('/properties/:id', wrap(async (req, res) => {
   const compSaved = req.query.comp === 'sale' || req.query.comp === 'lease' ? `<p class="box ok">${req.query.comp === 'sale' ? 'Sale' : 'Lease'} comp saved.</p>` : '';
   const hidden = listFields(pageQuery);
   const back = backInfo ? `<a class="back-callbacks" href="${backInfo.href}">${esc(backInfo.label)}</a>` : '';
+  const bundle = await People.loadPeople(db);
+  const alsoGroups = People.alsoApplies(p.id, p.owners, bundle.owners, bundle.links);
+  const alsoHtml = alsoGroups.map((g) => `<div class="also-apply wide" data-also-owner="${g.ownerId}"><span class="small">Also applies to:</span>${g.properties.map((prop) => `<label class="chk"><input type="checkbox" name="also_${prop.id}" value="1" checked> ${esc(prop.address)}${prop.city ? ', ' + esc(prop.city) : ''}</label>`).join('')}</div>`).join('');
   res.send(layout(p.address, `<p class="crumbs">${back ? back + ' · ' : ''}<a href="/states/${esc(p.state || 'Unknown')}">${esc(p.state || p.state_raw || 'Unknown state')}</a> ›</p>
   <div class="ph"><div><h1>${esc(p.address)}${newBadge(p)}</h1><p class="muted">${esc([p.city, p.state || p.state_raw, p.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p></div>
   <div class="ph-side"><div>${badge(p.status)} ${leadBadge(p)} ${p.lead_at ? `<span class="muted small">${esc(fmtStamp(p.lead_at))}</span>` : ''} ${p.callback_date ? `<span class="${p.cb_due ? 'due' : 'muted'}">Callback ${fmtDate(p.callback_date)}</span>` : ''}</div>
@@ -563,7 +580,9 @@ app.get('/properties/:id', wrap(async (req, res) => {
     <label class="wide">Notes<textarea name="notes" rows="3" placeholder="What did they say?"></textarea></label>
     <label class="wide chk"><input type="checkbox" name="clear_cb" value="1"> Clear existing callback</label>
     <label class="wide chk"><input type="checkbox" name="log_comp" value="1"> They shared rent or sale numbers — log a comp next</label>
+    ${alsoHtml}
     <div class="wide"><button>Save call</button></div></form>
+   <script>(function () { var form = document.querySelector('form.logcall'); if (!form) return; var sel = form.querySelector('select[name=owner_id]'); function sync() { var id = sel ? sel.value : ''; form.querySelectorAll('[data-also-owner]').forEach(function (el) { var on = el.getAttribute('data-also-owner') === id; el.hidden = !on; el.querySelectorAll('input').forEach(function (input) { input.disabled = !on; }); }); } if (sel) sel.addEventListener('change', sync); sync(); })();</script>
    <details class="box"><summary>+ Add a note</summary><form method="post" action="/properties/${p.id}/activities" class="form">${hidden}<input type="hidden" name="kind" value="note">
     <textarea name="notes" rows="3" required></textarea><button>Save note</button></form></details>
    <h2>Activity</h2>${p.activities.length ? activityList(p.activities, false, { propertyId: p.id, hidden }) : '<p class="muted">No activity yet.</p>'}
@@ -636,20 +655,37 @@ app.post('/properties/:id/unlead', wrap(async (req, res) => {
   res.redirect('/properties/' + id + qs(contextQuery(req.body)));
 }));
 const STATUS_FROM_OUTCOME = { Talked: 'Talked', Interested: 'Interested', 'Not interested': 'Not interested', 'Do not call': 'Do not call' };
+function applyCallTouch(t, propertyId, { date, outcome, cb, clear }) {
+  const newStatus = STATUS_FROM_OUTCOME[outcome] || null;
+  return t.query(`UPDATE properties SET last_contacted = GREATEST(COALESCE(last_contacted, $2::date), $2::date),
+    status = CASE WHEN $3::text IS NOT NULL THEN $3::text WHEN status='New' THEN 'Attempted' ELSE status END,
+    callback_date = CASE WHEN $4::date IS NOT NULL THEN $4::date WHEN $5::boolean THEN NULL ELSE callback_date END, updated_at=now() WHERE id=$1`,
+    [propertyId, date, newStatus, cb, !!clear]);
+}
 app.post('/properties/:id/activities', wrap(async (req, res) => {
   const id = parseInt(req.params.id); const b = req.body;
   const kind = b.kind === 'note' ? 'note' : 'call';
   const outcome = kind === 'call' ? (OUTCOMES.includes(b.outcome) ? b.outcome : 'No answer') : null;
   const date = ndate(b.activity_date) || today(); const cb = kind === 'call' ? ndate(b.callback_date) : null;
   await db.tx(async (t) => {
-    await t.query('INSERT INTO activities (property_id, owner_id, kind, outcome, notes, activity_date, callback_date) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    const [act] = await t.query('INSERT INTO activities (property_id, owner_id, kind, outcome, notes, activity_date, callback_date) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
       [id, parseInt(b.owner_id) || null, kind, outcome, nz(b.notes), date, cb]);
     if (kind === 'call') {
-      const newStatus = STATUS_FROM_OUTCOME[outcome];
-      await t.query(`UPDATE properties SET last_contacted = GREATEST(COALESCE(last_contacted, $2::date), $2::date),
-        status = CASE WHEN $3::text IS NOT NULL THEN $3::text WHEN status='New' THEN 'Attempted' ELSE status END,
-        callback_date = CASE WHEN $4::date IS NOT NULL THEN $4::date WHEN $5 THEN NULL ELSE callback_date END, updated_at=now() WHERE id=$1`,
-        [id, date, newStatus || null, cb, b.clear_cb === '1']);
+      await applyCallTouch(t, id, { date, outcome, cb, clear: b.clear_cb === '1' });
+      const ownerId = parseInt(b.owner_id, 10) || 0;
+      if (ownerId) {
+        const bundle = await People.loadPeople(t);
+        const owner = bundle.owners.find((o) => Number(o.id) === ownerId) || { id: ownerId, name: '' };
+        const [group] = People.alsoApplies(id, [owner], bundle.owners, bundle.links);
+        const wanted = new Set(People.checkedAlso(b));
+        const who = owner.name || owner.entity || 'the owner';
+        for (const prop of (group && group.properties) || []) {
+          if (!wanted.has(prop.id)) continue;
+          await t.query(`INSERT INTO activities (property_id, owner_id, kind, outcome, notes, activity_date, parent_activity_id)
+            VALUES ($1,$2,'call',$3,$4,$5,$6)`, [prop.id, prop.ownerId || ownerId, outcome, `Logged via owner ${who} from property #${id}`, date, act.id]);
+          await applyCallTouch(t, prop.id, { date, outcome, cb: null, clear: false });
+        }
+      }
     } else await t.query('UPDATE properties SET updated_at=now() WHERE id=$1', [id]);
   });
   const saved = contextQuery(b);
@@ -672,6 +708,16 @@ app.post('/properties/:id/activities/:aid/date', wrap(async (req, res) => {
   if (row.kind !== 'call') return res.status(400).send(layout('Edit date', `<h1>That date stays as recorded</h1><p>Only a logged call can be redated. Import rows are left alone.</p><p><a href="${esc(back)}">Back</a></p>`));
   // last_contacted is stored when a call is logged (and by import). It is not derived from activity dates, so a redate does not rewrite it.
   await db.query('UPDATE activities SET activity_date=$1 WHERE id=$2 AND property_id=$3 AND kind=$4', [date, aid, id, 'call']);
+  res.redirect(back);
+}));
+app.post('/properties/:id/activities/:aid/delete', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const aid = parseInt(req.params.aid, 10);
+  const back = '/properties/' + id + qs(contextQuery(req.body));
+  const [row] = await db.query('SELECT id, kind, parent_activity_id FROM activities WHERE id=$1 AND property_id=$2', [aid, id]);
+  if (!row) return res.status(404).send(layout('Not found', `<h1>Activity not found</h1><p><a href="${esc(back)}">Back</a></p>`));
+  if (row.kind !== 'call' || row.parent_activity_id) return res.status(400).send(layout('Delete call', `<h1>That call stays in the log</h1><p>Only the original logged call can be deleted. Import rows are left alone.</p><p><a href="${esc(back)}">Back</a></p>`));
+  await db.query('DELETE FROM activities WHERE id=$1 AND property_id=$2 AND kind=$3 AND parent_activity_id IS NULL', [aid, id, 'call']);
   res.redirect(back);
 }));
 app.post('/properties/:id/owners', wrap(async (req, res) => {

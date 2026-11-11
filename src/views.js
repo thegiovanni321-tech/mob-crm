@@ -51,6 +51,22 @@ function propertyRows(rows, { showState = true, list = null } = {}) {
   <div class="r-side">${badge(p.status)}${p.callback_date ? `<span class="small ${p.cb_due ? 'due' : 'muted'}">CB ${fmtDate(p.callback_date)}</span>` : ''}</div></a>`;
   }).join('')}</div>`;
 }
+function groupedPropertyRows(groups, opts = {}) {
+  const { showState = true, list = null } = opts;
+  if (!groups.length) return '<p class="muted">No properties match.</p>';
+  return `<div class="list">${groups.map((p, i) => {
+    const id = p.propertyId || p.id;
+    const extra = list && list.from ? { cb_at: i } : null;
+    const q = list ? qs(extra ? { ...list, ...extra } : list) : '';
+    const also = (p.also || []).length
+      ? `<div class="also-owns small">Also owns: ${p.also.length} propert${p.also.length === 1 ? 'y' : 'ies'} ${p.also.map((a) => `<a href="/properties/${a.propertyId || a.id}">${esc(a.address || '')}</a>`).join(', ')}</div>`
+      : '';
+    return `<div class="row" id="p-${id}">
+  <div class="r-main"><a href="/properties/${id}${q}"><strong>${esc(p.address)}</strong></a>${newBadge(p)}${leadBadge(p)}<span class="muted">${esc([p.city, showState ? p.state || p.state_raw : null, p.zip].filter(Boolean).join(', '))}</span>${also}</div>
+  <div class="r-meta"><span>${esc(p.owner_names || p.entities || p.ownerName || '—')}</span><span class="muted small">${esc(p.tenant_names || '')}</span></div>
+  <div class="r-side">${badge(p.status)}${p.callback_date ? `<span class="small ${p.cb_due ? 'due' : 'muted'}">CB ${fmtDate(p.callback_date)}</span>` : ''}</div></div>`;
+  }).join('')}</div>`;
+}
 function filterForm(f, tenants, states, action = '/properties') {
   const opt = (v, l, sel) => `<option value="${esc(v)}"${String(sel) === String(v) ? ' selected' : ''}>${esc(l)}</option>`;
   return `<form class="filters" method="get" action="${action}">
@@ -61,4 +77,4 @@ function filterForm(f, tenants, states, action = '/properties') {
 <select name="cb"><option value="">Any callback</option>${opt('due', 'Callback due', f.cb)}${opt('week', 'Due within 7 days', f.cb)}${opt('any', 'Has callback', f.cb)}${opt('none', 'No callback', f.cb)}</select>
 ${f.sort ? `<input type="hidden" name="sort" value="${esc(f.sort)}">` : ''}<button>Filter</button> <a class="btn ghost" href="${action}">Reset</a></form>`;
 }
-module.exports = { BANNER,  esc, layout, propertyRows, filterForm, badge, newBadge, leadBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES };
+module.exports = { BANNER,  esc, layout, propertyRows, groupedPropertyRows, filterForm, badge, newBadge, leadBadge, fmtDate, isoDate, money, numf, pct, telHref, firstEmail, qs, STATUSES, OUTCOMES, STATE_NAMES };
