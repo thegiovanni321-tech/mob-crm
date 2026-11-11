@@ -1,12 +1,17 @@
 // Which list a property was opened from. Previous/Next and Back use this, not the property's state.
 const FROM = new Set(['cb', 'cbdue', 'cbsoon', 'cbhide', 'listings', 'buyer', 'state', 'leads']);
 const ORDERED = new Set(['cb', 'cbdue', 'cbsoon', 'cbhide', 'listings', 'buyer', 'leads']);
-const KEYS = ['from', 'fu_state', 'cb_at', 'lst', 'bid', 'ld_at'];
+const KEYS = ['from', 'fu_state', 'cb_at', 'lst', 'bid', 'ld_at', 'ret'];
 
+function propertyRet(v) {
+  const n = Number.parseInt(v, 10);
+  return Number.isInteger(n) && n > 0 && n < 100000000 ? n : null;
+}
 function returnFromQuery(q) {
   const src = q || {};
   const from = String(src.from || '').trim();
-  if (!FROM.has(from)) return null;
+  const ret = propertyRet(src.ret);
+  if (!FROM.has(from)) return ret ? { from: '', fu_state: '', cb_at: null, lst: '', bid: null, ret } : null;
   const state = String(src.fu_state || '').trim().toUpperCase();
   const fu_state = /^[A-Z]{2}$/.test(state) ? state : '';
   const atRaw = from === 'leads' ? src.ld_at : src.cb_at;
@@ -19,17 +24,22 @@ function returnFromQuery(q) {
     cb_at: Number.isInteger(at) && at >= 0 && at < 100000 ? at : null,
     lst,
     bid: Number.isInteger(bid) && bid > 0 ? bid : null,
+    ret,
   };
 }
 function returnQuery(ctx) {
-  if (!ctx || !FROM.has(ctx.from)) return {};
-  const out = { from: ctx.from };
-  if (ctx.fu_state) out.fu_state = ctx.fu_state;
-  if (ctx.from === 'leads') {
-    if (ctx.cb_at != null && ctx.cb_at !== '') out.ld_at = String(ctx.cb_at);
-  } else if (ctx.cb_at != null && ctx.cb_at !== '') out.cb_at = String(ctx.cb_at);
-  if (ctx.lst) out.lst = ctx.lst;
-  if (ctx.bid) out.bid = String(ctx.bid);
+  if (!ctx) return {};
+  const out = {};
+  if (FROM.has(ctx.from)) {
+    out.from = ctx.from;
+    if (ctx.fu_state) out.fu_state = ctx.fu_state;
+    if (ctx.from === 'leads') {
+      if (ctx.cb_at != null && ctx.cb_at !== '') out.ld_at = String(ctx.cb_at);
+    } else if (ctx.cb_at != null && ctx.cb_at !== '') out.cb_at = String(ctx.cb_at);
+    if (ctx.lst) out.lst = ctx.lst;
+    if (ctx.bid) out.bid = String(ctx.bid);
+  }
+  if (ctx.ret) out.ret = String(ctx.ret);
   return out;
 }
 function listUrl(ctx, anchorId) {

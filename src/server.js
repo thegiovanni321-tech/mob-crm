@@ -384,6 +384,7 @@ function ownerCard(o, pid) {
   ${web ? `<div><a href="${esc(web)}" target="_blank" rel="noopener">🌐 ${esc(o.website)}</a></div>` : ''}
   ${o.mailing_address ? `<div class="small">📬 ${esc(o.mailing_address)}</div>` : ''}
   ${o.notes ? `<div class="small muted pre">${esc(o.notes)}</div>` : ''}
+  ${(o._others || []).length ? `<div class="other-owned"><div class="small"><b>Other properties owned by ${esc(o.name || o.entity || 'this owner')}</b></div><ul>${o._others.map((prop) => `<li><a href="/properties/${prop.id}${o._otherQs || ''}">${esc([prop.address, prop.city, prop.state].filter(Boolean).join(', '))}</a></li>`).join('')}</ul></div>` : ''}
   ${pid ? `<div class="o-actions small"><a href="/owners/${o.id}/edit?back=/properties/${pid}">Edit</a> · <form method="post" action="/properties/${pid}/owners/${o.id}/unlink" class="inline" onsubmit="return confirm('Unlink this owner from the property?')">${o._listFields || ''}<button class="link">Unlink</button></form></div>` : ''}</div>`;
 }
 function activityList(acts, withProp = false, edit = null) {
@@ -548,10 +549,20 @@ app.get('/properties/:id', wrap(async (req, res) => {
   const compSaved = req.query.comp === 'sale' || req.query.comp === 'lease' ? `<p class="box ok">${req.query.comp === 'sale' ? 'Sale' : 'Lease'} comp saved.</p>` : '';
   const hidden = listFields(pageQuery);
   const back = backInfo ? `<a class="back-callbacks" href="${backInfo.href}">${esc(backInfo.label)}</a>` : '';
+  let originBack = '';
+  if (ret && ret.ret && ret.ret !== p.id) {
+    const [orig] = await db.query('SELECT id, address FROM properties WHERE id=$1', [ret.ret]);
+    if (orig) {
+      const backQs = qs(Return.returnQuery({ ...ret, ret: null }));
+      originBack = `<p class="back-origin"><a class="back-callbacks" href="/properties/${orig.id}${backQs}">← Back to ${esc(orig.address)}</a></p>`;
+    }
+  }
   const bundle = await People.loadPeople(db);
   const alsoGroups = People.alsoApplies(p.id, p.owners, bundle.owners, bundle.links);
+  const otherQs = qs({ ...pageQuery, ret: p.id });
+  const othersOf = new Map(alsoGroups.map((g) => [g.ownerId, g.properties]));
   const alsoHtml = alsoGroups.map((g) => `<div class="also-apply wide" data-also-owner="${g.ownerId}"><span class="small">Also applies to:</span>${g.properties.map((prop) => `<label class="chk"><input type="checkbox" name="also_${prop.id}" value="1" checked> ${esc(prop.address)}${prop.city ? ', ' + esc(prop.city) : ''}</label>`).join('')}</div>`).join('');
-  res.send(layout(p.address, `<p class="crumbs">${back ? back + ' · ' : ''}<a href="/states/${esc(p.state || 'Unknown')}">${esc(p.state || p.state_raw || 'Unknown state')}</a> ›</p>
+  res.send(layout(p.address, `${originBack}<p class="crumbs">${back ? back + ' · ' : ''}<a href="/states/${esc(p.state || 'Unknown')}">${esc(p.state || p.state_raw || 'Unknown state')}</a> ›</p>
   <div class="ph"><div><h1>${esc(p.address)}${newBadge(p)}</h1><p class="muted">${esc([p.city, p.state || p.state_raw, p.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p></div>
   <div class="ph-side"><div>${badge(p.status)} ${leadBadge(p)} ${p.lead_at ? `<span class="muted small">${esc(fmtStamp(p.lead_at))}</span>` : ''} ${p.callback_date ? `<span class="${p.cb_due ? 'due' : 'muted'}">Callback ${fmtDate(p.callback_date)}</span>` : ''}</div>
   <nav class="prop-nav" aria-label="Properties in this calling list">${propArrow('prev', walk.prev, prevQuery)}<span class="muted small">${walk.total ? `${Math.min(walk.index, walk.total - 1) + 1} of ${walk.total}` : ''}</span>${propArrow('next', walk.next, nextQuery)}</nav>
@@ -560,7 +571,7 @@ app.get('/properties/:id', wrap(async (req, res) => {
   <div class="chips">${p.tenants.map((t) => `<a href="/tenants/${t.id}">${esc(t.name)}</a>`).join('')}</div>
   ${compSaved}<p class="actions"><a class="btn small" href="/properties/${p.id}${qs(pageQuery)}${qs(pageQuery) ? '&' : '?'}logcomp=1#comps">+ Log comp</a> <a class="btn ghost small" href="#comps">Comps</a></p>
   <div class="cols"><section>
-   <h2>Owner contacts</h2>${p.owners.map((o) => { o._listFields = hidden; return ownerCard(o, p.id); }).join('') || '<p class="muted">No owner linked.</p>'}
+   <h2>Owner contacts</h2>${p.owners.map((o) => { o._listFields = hidden; o._others = othersOf.get(Number(o.id)) || []; o._otherQs = otherQs; return ownerCard(o, p.id); }).join('') || '<p class="muted">No owner linked.</p>'}
    <details class="box"><summary>+ Add / link owner</summary>
     <form method="post" action="/properties/${p.id}/owners" class="form grid">${hidden}
      <label class="wide">Link existing owner — search by name/entity/phone<input name="existing_q" placeholder="e.g. Smith or 813555"></label>
