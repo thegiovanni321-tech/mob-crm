@@ -48,6 +48,8 @@ button.link{background:none;color:var(--acc);padding:0;font-size:inherit}button.
 fieldset{border:1px solid var(--line);border-radius:10px}.logcall{background:#fff;border:1px solid var(--line);border-radius:12px;padding:.8rem}
 .acts{list-style:none;padding:0;margin:0;background:#fff;border:1px solid var(--line);border-radius:12px}.acts li{padding:.6rem .9rem;border-top:1px solid var(--line)}.acts li:first-child{border-top:0}
 .acts li.k-import{background:#fafbfc}.inline{display:inline}
+.edit-date{display:flex;gap:.4rem;align-items:center;margin-top:.35rem;flex-wrap:wrap}
+.edit-date input[type=date]{font:inherit}
 .facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:0}.facts div{background:#fff;border:1px solid var(--line);border-radius:10px;padding:.5rem .7rem}
 .facts dt{font-size:.75rem;color:var(--mut)}.facts dd{margin:0;font-weight:600}
 .pager{display:flex;gap:.75rem;align-items:center;justify-content:center;margin:1rem 0}.sort a{margin-left:.5rem}.sort a.on{font-weight:700;color:var(--fg)}

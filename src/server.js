@@ -382,11 +382,13 @@ function ownerCard(o, pid) {
   ${o.notes ? `<div class="small muted pre">${esc(o.notes)}</div>` : ''}
   ${pid ? `<div class="o-actions small"><a href="/owners/${o.id}/edit?back=/properties/${pid}">Edit</a> · <form method="post" action="/properties/${pid}/owners/${o.id}/unlink" class="inline" onsubmit="return confirm('Unlink this owner from the property?')">${o._listFields || ''}<button class="link">Unlink</button></form></div>` : ''}</div>`;
 }
-function activityList(acts, withProp = false) {
+function activityList(acts, withProp = false, edit = null) {
+  const canEdit = edit && edit.propertyId;
   return `<ul class="acts">${acts.map((a) => `<li class="k-${esc(a.kind)}"><div><b>${esc(a.outcome || (a.kind === 'note' ? 'Note' : a.kind === 'lead' ? 'Marked as lead' : a.kind))}</b>
   <span class="muted small">${a.activity_date ? fmtDate(a.activity_date) : a.kind === 'import' ? 'date not recorded' : ''}${a.owner_name ? ' · ' + esc(a.owner_name) : ''}${a.callback_date ? ' · callback ' + fmtDate(a.callback_date) : ''}</span></div>
   ${withProp ? `<div class="small"><a href="/properties/${a.property_id}">${esc(a.address)}, ${esc(a.city || '')} ${esc(a.state || '')}</a></div>` : ''}
-  ${a.notes ? `<div class="pre small">${esc(a.notes)}</div>` : ''}</li>`).join('')}</ul>`;
+  ${a.notes ? `<div class="pre small">${esc(a.notes)}</div>` : ''}
+  ${canEdit && a.kind === 'call' ? `<form method="post" action="/properties/${edit.propertyId}/activities/${a.id}/date" class="edit-date">${edit.hidden || ''}<label class="small">Edit date <input type="date" name="activity_date" value="${isoDate(a.activity_date)}" title="Eastern Time date" required></label> <button class="btn ghost small">Save</button></form>` : ''}</li>`).join('')}</ul>`;
 }
 app.get('/properties/new', wrap(async (req, res) => {
   res.send(layout('New property', `<h1>New property</h1>${propertyForm({ status: 'New' }, await tenantList(), '/properties', req.query.tenant ? [String(req.query.tenant)] : [])}`, { active: 'properties' }));
@@ -555,7 +557,7 @@ app.get('/properties/:id', wrap(async (req, res) => {
    <form method="post" action="/properties/${p.id}/activities" class="form grid logcall">${hidden}
     <input type="hidden" name="kind" value="call">
     <label>Outcome<select name="outcome">${OUTCOMES.map((o) => `<option>${o}</option>`).join('')}</select></label>
-    <label>Date<input type="date" name="activity_date" value="${today()}"></label>
+    <label>Date<input type="date" name="activity_date" value="${today()}" data-call-date="auto" autocomplete="off"></label>
     <label>Contact<select name="owner_id"><option value="">—</option>${p.owners.map((o) => `<option value="${o.id}">${esc(o.name || o.entity)}</option>`).join('')}</select></label>
     <label>Callback date<input type="date" name="callback_date"></label>
     <label class="wide">Notes<textarea name="notes" rows="3" placeholder="What did they say?"></textarea></label>
@@ -564,7 +566,7 @@ app.get('/properties/:id', wrap(async (req, res) => {
     <div class="wide"><button>Save call</button></div></form>
    <details class="box"><summary>+ Add a note</summary><form method="post" action="/properties/${p.id}/activities" class="form">${hidden}<input type="hidden" name="kind" value="note">
     <textarea name="notes" rows="3" required></textarea><button>Save note</button></form></details>
-   <h2>Activity</h2>${p.activities.length ? activityList(p.activities) : '<p class="muted">No activity yet.</p>'}
+   <h2>Activity</h2>${p.activities.length ? activityList(p.activities, false, { propertyId: p.id, hidden }) : '<p class="muted">No activity yet.</p>'}
   </section></div>
   ${compsHtml}
   <h2>Property details</h2><dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('') || '<p class="muted">No details.</p>'}</dl>
@@ -658,6 +660,19 @@ app.post('/properties/:id/activities', wrap(async (req, res) => {
     return res.redirect(`/comps/log?property_id=${id}&from=call${listQs ? '&' + listQs.slice(1) : ''}`);
   }
   res.redirect('/properties/' + id + qs(saved));
+}));
+app.post('/properties/:id/activities/:aid/date', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const aid = parseInt(req.params.aid, 10);
+  const back = '/properties/' + id + qs(contextQuery(req.body));
+  const date = ndate(req.body.activity_date);
+  if (!date) return res.status(400).send(layout('Edit date', `<h1>Enter a date</h1><p><a href="${esc(back)}">Back</a></p>`));
+  const [row] = await db.query('SELECT id, kind FROM activities WHERE id=$1 AND property_id=$2', [aid, id]);
+  if (!row) return res.status(404).send(layout('Not found', `<h1>Activity not found</h1><p><a href="${esc(back)}">Back</a></p>`));
+  if (row.kind !== 'call') return res.status(400).send(layout('Edit date', `<h1>That date stays as recorded</h1><p>Only a logged call can be redated. Import rows are left alone.</p><p><a href="${esc(back)}">Back</a></p>`));
+  // last_contacted is stored when a call is logged (and by import). It is not derived from activity dates, so a redate does not rewrite it.
+  await db.query('UPDATE activities SET activity_date=$1 WHERE id=$2 AND property_id=$3 AND kind=$4', [date, aid, id, 'call']);
+  res.redirect(back);
 }));
 app.post('/properties/:id/owners', wrap(async (req, res) => {
   const id = parseInt(req.params.id); const b = req.body;

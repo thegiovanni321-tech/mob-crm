@@ -4,8 +4,10 @@ const { AsyncLocalStorage } = require('async_hooks');
 const store = new AsyncLocalStorage();
 
 const TZ = 'America/New_York';
-// kind = 'call' is the only logged-call row (Properties and Callbacks both use that insert).
-// Attempts (No answer, Wrong number, voicemail, text) and completed conversations all count.
+// kind = 'call' is the only logged-call row. The property log form (every list context)
+// posts that kind; Left voicemail, Texted, and the other outcomes are stored on it.
+// The day that counts is activity_date. An untouched form date is corrected to
+// today in the browser before submit, so a tab left open overnight is not filed yesterday.
 // Notes do not. Imported Talked rows are past conversations and count on their activity date.
 // Imported Called rows are spreadsheet last-contacted dates, not logged calls.
 const CALL_WHERE = `(

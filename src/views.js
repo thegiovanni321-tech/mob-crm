@@ -31,7 +31,7 @@ function layout(title, body, opts = {}) {
 <form class="search" action="/search" method="get"><input type="search" name="q" value="${esc(q)}" placeholder="Search address, owner, entity, city, phone…" aria-label="Search"></form>
 ${callsLink}<a class="logout" href="/logout">Log out</a></header>
 <nav class="tabs">${nav.map(([h, l, k]) => `<a href="${h}" class="${active === k ? 'on' : ''}">${l}</a>`).join('')}</nav></div>
-${BANNER.html}<main>${body}</main></body></html>`;
+${BANNER.html}<main>${body}</main><script src="/static/call-date.js"></script></body></html>`;
 }
 function newBadge(p) {
   return p && p.is_new ? ' <span class="badge new" title="Added in the last 7 days and not yet called">New</span>' : '';
