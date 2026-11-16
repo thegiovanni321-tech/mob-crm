@@ -1,0 +1,20 @@
+node_modules/
+# Private owner data never goes into git: it is loaded straight into the database with `npm run import`
+data/
+backups/
+tmp/
+screenshots/
+attachments/
+exports/
+.env
+.env.*
+*.xlsx
+*.pem
+*.token
+*sync-token*
+*credentials*
+.preview-password
+.preview-secret
+.railway-password
+.railway-sync-token
+.remote-sync.json
