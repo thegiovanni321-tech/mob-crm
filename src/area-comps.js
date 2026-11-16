@@ -361,8 +361,9 @@ function renderAreaComps(model) {
       : unk;
     const term = num(c.term_months) > 0 ? esc(numf(c.term_months, num(c.term_months) % 1 ? 1 : 0) + ' mo') : unk;
     const href = `/comps/leases/${c.id}`;
+    const saleBadge = c.for_sale === true ? ` <span class="badge for-sale">For sale${num(c.asking_price) > 0 ? ' · ' + esc(money(c.asking_price)) : ''}</span>` : '';
     return `<tr>
-      <td class="addr"><a href="${href}"><b>${esc(c.address || 'Address unknown')}</b></a><div class="small">${sourceLine(c)}</div></td>
+      <td class="addr"><a href="${href}"><b>${esc(c.address || 'Address unknown')}</b></a>${saleBadge}<div class="small">${sourceLine(c)}</div></td>
       <td class="num">${rentHtml}</td>
       <td>${textOrNull(c.tenant) ? esc(c.tenant) : unk}</td>
       <td>${term}</td>

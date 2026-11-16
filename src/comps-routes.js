@@ -38,7 +38,7 @@ const KIND = {
 };
 const SELECT = (k) => `SELECT c.*${k === 'sale' ? ', CASE WHEN c.rba > 0 AND c.price > 0 THEN round(c.price / c.rba, 2) END AS ppsf' : ''}, t.name tenant_name, p.address prop_address
   FROM ${KIND[k].table} c LEFT JOIN tenants t ON t.id=c.tenant_id LEFT JOIN properties p ON p.id=c.property_id`;
-const pickF = (q) => Object.fromEntries(['q', 'state', 'city', 'from', 'to', 'min', 'max', 'verified', 'tenant', 'property', 'source', 'cap', 'sort', 'dir'].map((k) => [k, nz(q[k]) || '']));
+const pickF = (q) => Object.fromEntries(['q', 'state', 'city', 'from', 'to', 'min', 'max', 'verified', 'tenant', 'property', 'source', 'cap', 'forsale', 'sort', 'dir'].map((k) => [k, nz(q[k]) || '']));
 function where(k, f) {
   const K = KIND[k]; const w = []; const params = [];
   const add = (sql, v) => { params.push(v); w.push(sql.replace(/\?/g, '$' + params.length)); };
@@ -54,6 +54,8 @@ function where(k, f) {
   if (f.source) add('c.source = ?', f.source);
   if (k === 'sale' && f.cap === 'yes') w.push('(c.cap_rate IS NOT NULL AND c.cap_rate > 0)');
   if (k === 'sale' && f.cap === 'no') w.push('(c.cap_rate IS NULL OR c.cap_rate <= 0)');
+  if (k === 'lease' && f.forsale === 'yes') w.push('c.for_sale IS TRUE');
+  if (k === 'lease' && f.forsale === 'no') w.push('c.for_sale IS NOT TRUE');
   if (f.q) {
     params.push('%' + f.q + '%'); const i = '$' + params.length;
     w.push(k === 'sale' ? `(c.address ILIKE ${i} OR c.city ILIKE ${i} OR c.buyer ILIKE ${i} OR c.seller ILIKE ${i} OR c.tenants ILIKE ${i} OR c.notes ILIKE ${i} OR c.source ILIKE ${i} OR c.zip ILIKE ${i} OR t.name ILIKE ${i})`
@@ -87,6 +89,17 @@ module.exports = function mountComps(app, getDb, wrap) {
         : `round(avg(c.rent_psf) FILTER (WHERE c.rent_psf > 0 AND btrim(c.source) IS DISTINCT FROM '${C.CREXI_NOI_SF_SOURCE.replace(/'/g, "''")}'), 2) avg_rent, round(avg(c.term_months) FILTER (WHERE c.term_months > 0), 0) avg_term, round(sum(c.sf_leased), 0) total_sf`}
         FROM ${K.table} c LEFT JOIN tenants t ON t.id=c.tenant_id${w.sql}`, w.params);
       const rows = await db.query(`${SELECT(k)}${w.sql}${orderBy(k, f)} LIMIT ${per} OFFSET ${(page - 1) * per}`, w.params);
+      const compIds = rows.map((c) => c.id);
+      if (compIds.length) {
+        const col = k === 'sale' ? 'sale_comp_id' : 'lease_comp_id';
+        const docs = await db.query(`SELECT id, filename, ${col} AS comp_id FROM property_documents WHERE ${col} = ANY($1::int[])`, [compIds]);
+        const byComp = new Map();
+        for (const d of docs) {
+          if (!byComp.has(d.comp_id)) byComp.set(d.comp_id, []);
+          byComp.get(d.comp_id).push(d);
+        }
+        for (const c of rows) c._docs = byComp.get(c.id) || [];
+      }
       const states = await db.query(`SELECT state, count(*)::int n FROM ${K.table} WHERE state IS NOT NULL GROUP BY 1 ORDER BY 1`);
       const sources = await db.query(`SELECT source, count(*)::int n FROM ${K.table} WHERE source IS NOT NULL GROUP BY 1 ORDER BY 2 DESC`);
       const tenants = await db.query(`SELECT DISTINCT t.id, t.name FROM ${K.table} c JOIN tenants t ON t.id=c.tenant_id ORDER BY t.name`);
@@ -121,7 +134,7 @@ module.exports = function mountComps(app, getDb, wrap) {
         <select name="verified"><option value="">Verified + unverified</option>${opt('1', 'Verified only', f.verified)}${opt('0', 'Unverified only', f.verified)}</select>
         <select name="tenant"><option value="">All tenant groups</option>${tenants.map((t) => opt(t.id, t.name, f.tenant)).join('')}</select>
         <select name="source"><option value="">All sources</option>${sources.map((s) => opt(s.source, `${s.source} (${s.n})`, f.source)).join('')}</select>
-        ${k === 'sale' ? `<select name="cap"><option value="">Cap: all</option>${opt('yes', 'Has cap rate', f.cap)}${opt('no', 'No cap rate', f.cap)}</select>` : ''}
+        ${k === 'sale' ? `<select name="cap"><option value="">Cap: all</option>${opt('yes', 'Has cap rate', f.cap)}${opt('no', 'No cap rate', f.cap)}</select>` : `<select name="forsale"><option value="">For sale: all</option>${opt('yes', 'For sale', f.forsale)}${opt('no', 'Not for sale', f.forsale)}</select>`}
         ${f.property ? `<input type="hidden" name="property" value="${esc(f.property)}">` : ''}<input type="hidden" name="sort" value="${esc(f.sort)}"><input type="hidden" name="dir" value="${esc(f.dir)}">
         <button>Filter</button> <a class="btn ghost" href="${K.base}">Reset</a></form>
       ${capLinks}
@@ -129,7 +142,7 @@ module.exports = function mountComps(app, getDb, wrap) {
       <p class="actions"><a class="btn small" href="${K.base}/new">+ Add ${K.one}</a> <a class="btn ghost small" href="${K.base}.csv${qs(f)}">Export ${agg.n} to CSV</a></p>
       ${rows.length ? `<div class="tblwrap"><table class="tbl comps"><thead><tr>${K.cols.map(sortLink).join('')}</tr></thead><tbody>
       ${rows.map((c) => `<tr>${K.cols.map(([col, , fn, num]) => col === 'address'
-        ? `<td class="addr"><a href="${K.base}/${c.id}"><b>${esc(c.address || '(no address)')}</b></a>${c.property_id ? ` <a class="small" href="/properties/${c.property_id}" title="Linked CRM property">🏢</a>` : ''}</td>`
+        ? `<td class="addr"><a href="${K.base}/${c.id}"><b>${esc(c.address || '(no address)')}</b></a>${k === 'lease' && c.for_sale === true ? ` <span class="badge for-sale">For sale${c.asking_price ? ' · ' + money(c.asking_price) : ''}</span>` : ''}${(c._docs || []).map((d) => ` <a class="small" href="/documents/${d.id}">Offering Memorandum</a>`).join('')}${c.property_id ? ` <a class="small" href="/properties/${c.property_id}" title="Linked CRM property">🏢</a>` : ''}</td>`
         : `<td class="${num ? 'num' : ''}${col === 'cap_rate' ? ' sticky-cap' : ''}${col === 'sale_date' || col === 'start_date' ? ' sticky-date' : ''}">${fn(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="muted">No comps match.</p>'}
       ${pagerHtml(agg.n, page, per, K.base + qs(f))}`, { active: 'comps' }));
     }));
@@ -155,14 +168,16 @@ module.exports = function mountComps(app, getDb, wrap) {
     app.get(K.base + '/:id', wrap(async (req, res) => {
       const [c] = await db.query(`${SELECT(k)} WHERE c.id=$1`, [parseInt(req.params.id) || 0]); if (!c) return res.status(404).send(layout('Not found', '<h1>Not found</h1>'));
       const facts = (k === 'sale' ? [['Sale date', fmtDate(c.sale_date)], ['Price', money(c.price)], ['RBA', c.rba ? numf(c.rba) + ' sf' : ''], ['$/SF', c.ppsf ? '$' + numf(c.ppsf, 2) : ''], ['Cap rate', pct(c.cap_rate)],
-        ['Year built', c.year_built], ['Acres', numf(c.acres, 2)], ['Buyer (as recorded)', c.buyer], ['Purchaser contact', c.purchaser_name], ['Purchaser entity', c.purchaser_entity], ['Purchaser phone', c.purchaser_phone], ['Purchaser email', c.purchaser_email], ['Seller', c.seller], ['Tenant(s)', c.tenants], ['Land use', c.land_use]]
+        ['Year built', c.year_built], ['Acres', numf(c.acres, 2)], ['Buyer (as recorded)', c.buyer], ['Purchaser contact', c.purchaser_name], ['Purchaser entity', c.purchaser_entity], ['Purchaser phone', c.purchaser_phone], ['Purchaser email', c.purchaser_email], ['Seller', c.seller], ['Tenant(s)', c.tenants || c.tenant], ['Lease type', c.lease_type], ['Lease expiration', fmtDate(c.lease_expiration)], ['NOI', c.noi ? money(c.noi) : ''], ['Listing broker', c.listing_broker], ['Listing URL', c.listing_url], ['Land use', c.land_use]]
         : [['Tenant', c.tenant], ['SF leased', numf(c.sf_leased)], ['Rent', leaseRentText(c)], ['Lease type', c.lease_type], ['Term', c.term_months ? c.term_months + ' months' : ''],
-          ['Start date', fmtDate(c.start_date)], ['Lease expiration', fmtDate(c.expiration_date)], ['Escalations', c.escalations], ['TI $/SF', c.ti_psf ? '$' + numf(c.ti_psf, 2) : ''], ['Free rent', c.free_rent_months ? c.free_rent_months + ' months' : '']]).filter((x) => x[1]);
+          ['Start date', fmtDate(c.start_date)], ['Lease expiration', fmtDate(c.expiration_date)], ['For sale', c.for_sale === true ? 'Yes' : c.for_sale === false ? 'No' : ''], ['Asking price', c.asking_price ? money(c.asking_price) : ''], ['Listing URL', c.listing_url], ['Escalations', c.escalations], ['TI $/SF', c.ti_psf ? '$' + numf(c.ti_psf, 2) : ''], ['Free rent', c.free_rent_months ? c.free_rent_months + ' months' : '']]).filter((x) => x[1]);
       const mapQ = encodeURIComponent([c.address, c.city, c.state, c.zip].filter(Boolean).join(', '));
       const attKind = k === 'lease' ? 'lease_comp' : 'sale_comp';
       const atts = await Att.listFor(db, attKind, c.id);
+      const docCol = k === 'sale' ? 'sale_comp_id' : 'lease_comp_id';
+      const oms = await db.query(`SELECT id, filename FROM property_documents WHERE ${docCol}=$1 ORDER BY id`, [c.id]);
       res.send(layout(c.address || K.one, `<p class="crumbs"><a href="${K.base}">${K.label}</a> ›</p>
-      <div class="ph"><div><h1>${esc(c.address)}</h1><p class="muted">${esc([c.city, c.state, c.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p></div><div>${k === 'sale' ? `<span class="badge ${Area.salePosture(c) === 'asking' ? 's-talked' : 's-listing-client'}">${Area.salePosture(c) === 'asking' ? 'Asking — not closed' : 'Closed sale'}</span> ` : ''}${vbadge(c.verified)}</div></div>
+      <div class="ph"><div><h1>${esc(c.address)}</h1><p class="muted">${esc([c.city, c.state, c.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p>${oms.length ? `<p>${oms.map((d) => `<a href="/documents/${d.id}">Offering Memorandum</a>`).join(' · ')}</p>` : ''}</div><div>${k === 'sale' ? `<span class="badge ${Area.salePosture(c) === 'asking' ? 's-talked' : 's-listing-client'}">${Area.salePosture(c) === 'asking' ? 'Asking — not closed' : 'Closed sale'}</span> ` : ''}${c.for_sale === true ? `<span class="badge for-sale">For sale${c.asking_price ? ' · ' + money(c.asking_price) : ''}</span> ` : ''}${vbadge(c.verified)}</div></div>
       ${c.property_id ? `<p>Linked property: <a href="/properties/${c.property_id}">${esc(c.prop_address)}</a>${c.tenant_name ? ` · Tenant group: <a href="/tenants/${c.tenant_id}">${esc(c.tenant_name)}</a>` : ''}</p>` : c.tenant_name ? `<p>Tenant group: <a href="/tenants/${c.tenant_id}">${esc(c.tenant_name)}</a></p>` : ''}
       ${atts.length ? `<p class="box" style="display:inline-block">${Att.linksHtml(atts)}</p>` : ''}
       ${k === 'sale' && c.buyer_id ? `<p>Buyer page: <a href="/buyers/${c.buyer_id}">${esc(c.purchaser_name || c.purchaser_entity || c.buyer)}</a></p>` : ''}
@@ -408,7 +423,7 @@ module.exports = function mountComps(app, getDb, wrap) {
         <div class="muted small">${esc([c.buyer && 'Buyer: ' + c.buyer, c.seller && 'Seller: ' + c.seller, c.source].filter(Boolean).join(' · '))}</div></li>`).join('')}</ul>` : ''}
       ${leases.length ? `<ul class="acts plain">${(await Promise.all(leases.map(async (c) => {
         const atts = await Att.listFor(db, 'lease_comp', c.id);
-        return `<li><a href="/comps/leases/${c.id}"><b>Lease ${esc(c.tenant || '')}</b></a> · ${leaseRentHtml(c)} ${esc(c.lease_type || '')}${c.sf_leased ? ` · ${numf(c.sf_leased)} sf` : ''}${c.term_months ? ` · ${c.term_months} mo` : ''} ${vbadge(c.verified)}
+        return `<li><a href="/comps/leases/${c.id}"><b>Lease ${esc(c.tenant || '')}</b></a>${c.for_sale === true ? ` <span class="badge for-sale">For sale${c.asking_price ? ' · ' + money(c.asking_price) : ''}</span>` : ''} · ${leaseRentHtml(c)} ${esc(c.lease_type || '')}${c.sf_leased ? ` · ${numf(c.sf_leased)} sf` : ''}${c.term_months ? ` · ${c.term_months} mo` : ''} ${vbadge(c.verified)}
         <div class="muted small">${esc([c.start_date && 'Start ' + fmtDate(c.start_date), c.source].filter(Boolean).join(' · '))}${atts.length ? ' · ' + atts.map((a) => `<a href="/files/${a.id}" target="_blank" rel="noopener">Offering memorandum (PDF)</a>`).join(', ') : ''}</div></li>`;
       }))).join('')}</ul>` : ''}
       ${!sales.length && !leases.length ? '<p class="muted">No comps linked to this property yet.</p>' : ''}

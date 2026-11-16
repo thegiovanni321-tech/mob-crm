@@ -10,6 +10,7 @@ const Follow = require('./followups');
 const Ages = require('./owner-ages');
 const Return = require('./callback-return');
 const People = require('./same-person');
+const Crexi = require('./crexi-weekly');
 const TZ = process.env.TZ_NAME || 'America/New_York';
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const plusDays = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -27,6 +28,8 @@ app.use((req, res, next) => { res.setHeader('X-Frame-Options', 'DENY'); res.setH
 app.use('/static', express.static(path.join(__dirname, '..', 'public'), { maxAge: '1d' }));
 app.use(express.urlencoded({ extended: false, limit: '200kb' }));
 const ageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const crexiUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024, files: 80 } });
+const crexiPlans = new Map();
 const ageImports = new Map();
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
@@ -64,6 +67,20 @@ app.get('/files/:id', wrap(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, no-store');
   const buf = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data);
+  res.end(buf);
+}));
+app.get('/documents/:id', wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(404).send('Not found');
+  const [doc] = await db.query('SELECT filename, content_type, bytes, size FROM property_documents WHERE id=$1', [id]);
+  if (!doc) return res.status(404).send(layout('Not found', '<h1>Document not found</h1>'));
+  const name = String(doc.filename || 'offering-memorandum.pdf').replace(/[\r\n"]/g, '_');
+  res.setHeader('Content-Type', doc.content_type || 'application/pdf');
+  res.setHeader('Content-Length', doc.size || 0);
+  res.setHeader('Content-Disposition', `inline; filename="${name}"`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, no-store');
+  const buf = Buffer.isBuffer(doc.bytes) ? doc.bytes : Buffer.from(doc.bytes);
   res.end(buf);
 }));
 // When .remote-sync.json exists (and no DATABASE_URL), this box copy is a read-only snapshot: the hosted app is live.
@@ -145,7 +162,7 @@ app.get('/', wrap(async (req, res) => {
     <a class="card" href="/owners"><b>${c.owners}</b><span>Owners</span></a>
     <a class="card" href="/tenants"><b>${c.tenants}</b><span>Tenants</span></a>
   </div>
-  <div class="actions"><a class="btn" href="/properties/new">+ Add property</a> <a class="btn ghost" href="/owners/new">+ Add owner</a> <a class="btn ghost" href="/export.csv">Export CSV</a> <a class="btn ghost" href="/admin/import-owner-ages">Import owner ages</a></div>
+  <div class="actions"><a class="btn" href="/properties/new">+ Add property</a> <a class="btn ghost" href="/owners/new">+ Add owner</a> <a class="btn ghost" href="/export.csv">Export CSV</a> <a class="btn ghost" href="/admin/import-owner-ages">Import owner ages</a> <a class="btn ghost" href="/admin/import-crexi-weekly">Import Crexi week</a></div>
   <h2>Properties by state</h2>${stateGrid(states)}
   <h2>Recent activity</h2>${recent.length ? activityList(recent, true) : '<p class="muted">No calls logged in the app yet.</p>'}`, { active: 'home' }));
 }));
@@ -577,8 +594,12 @@ app.get('/properties/:id', wrap(async (req, res) => {
   const otherQs = qs({ ...pageQuery, ret: p.id });
   const othersOf = new Map(alsoGroups.map((g) => [g.ownerId, g.properties]));
   const alsoHtml = alsoGroups.map((g) => `<div class="also-apply wide" data-also-owner="${g.ownerId}"><span class="small">Also applies to:</span>${g.properties.map((prop) => `<label class="chk"><input type="checkbox" name="also_${prop.id}" value="1" checked> ${esc(prop.address)}${prop.city ? ', ' + esc(prop.city) : ''}</label>`).join('')}</div>`).join('');
+  const oms = await db.query(`SELECT id, filename FROM property_documents WHERE property_id=$1
+    OR sale_comp_id IN (SELECT id FROM sale_comps WHERE property_id=$1)
+    OR lease_comp_id IN (SELECT id FROM lease_comps WHERE property_id=$1) ORDER BY id`, [p.id]);
+  const omHtml = oms.length ? `<p class="om-links">${oms.map((d) => `<a href="/documents/${d.id}">Offering Memorandum</a>`).join(' · ')}</p>` : '';
   res.send(layout(p.address, `${originBack}<p class="crumbs">${back ? back + ' · ' : ''}<a href="/states/${esc(p.state || 'Unknown')}">${esc(p.state || p.state_raw || 'Unknown state')}</a> ›</p>
-  <div class="ph"><div><h1>${esc(p.address)}${newBadge(p)}</h1><p class="muted">${esc([p.city, p.state || p.state_raw, p.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p></div>
+  <div class="ph"><div><h1>${esc(p.address)}${newBadge(p)}</h1><p class="muted">${esc([p.city, p.state || p.state_raw, p.zip].filter(Boolean).join(', '))} · <a href="https://www.google.com/maps/search/?api=1&query=${mapQ}" target="_blank" rel="noopener">Map</a></p>${omHtml}</div>
   <div class="ph-side"><div>${badge(p.status)} ${leadBadge(p)} ${p.lead_at ? `<span class="muted small">${esc(fmtStamp(p.lead_at))}</span>` : ''} ${p.callback_date ? `<span class="${p.cb_due ? 'due' : 'muted'}">Callback ${fmtDate(p.callback_date)}</span>` : ''}</div>
   <nav class="prop-nav" aria-label="Properties in this calling list">${propArrow('prev', walk.prev, prevQuery)}<span class="muted small">${walk.total ? `${Math.min(walk.index, walk.total - 1) + 1} of ${walk.total}` : ''}</span>${propArrow('next', walk.next, nextQuery)}</nav>
   ${walk.fellOut ? `<p class="muted small">${ordered ? 'This record is no longer in that list. Previous and next use the neighboring rows.' : 'This record no longer matches the list filter. Previous and next stay in that list order.'}</p>` : ''}
@@ -911,6 +932,60 @@ app.post('/admin/import-owner-ages/apply', wrap(async (req, res) => {
   <p>${plan.updated} owner${plan.updated === 1 ? '' : 's'} updated. ${plan.skipped.length} row${plan.skipped.length === 1 ? '' : 's'} skipped.</p>
   <p class="muted">Running the same file again will not change birth years that are already set.</p>
   <p><a href="/admin/import-owner-ages">Import another file</a></p>`, { active: '' }));
+}));
+
+function crexiFiles(req) {
+  const out = [];
+  for (const file of (req.files && req.files.oms) || []) out.push({ filename: file.originalname, buffer: file.buffer, mimetype: file.mimetype || 'application/pdf' });
+  return out;
+}
+app.get('/admin/import-crexi-weekly', (req, res) => {
+  res.send(layout('Import Crexi week', `<h1>Import Crexi week</h1>
+  <p class="muted">Upload the weekly sold comps CSV, the new listings CSV, and the offering memorandum PDFs. Nothing is saved until you apply the preview. Comps are matched to an existing property by address and are left unverified. Properties and owners are not created.</p>
+  <form method="post" action="/admin/import-crexi-weekly/preview" enctype="multipart/form-data" class="form">
+    <label>Week of<input type="date" name="week" value="${today()}" required></label>
+    <label>sold_comps.csv<input type="file" name="sold" accept=".csv,text/csv"></label>
+    <label>new_listings.csv<input type="file" name="listings" accept=".csv,text/csv"></label>
+    <label>Offering memorandums<input type="file" name="oms" accept="application/pdf,.pdf" multiple></label>
+    <button>Preview</button>
+  </form>
+  <p class="small muted">Each PDF may be up to 100 MB. If a week is larger, upload it in more than one batch. Uploading the same rows again adds nothing new.</p>`, { active: '' }));
+});
+app.post('/admin/import-crexi-weekly/preview', crexiUpload.fields([{ name: 'sold', maxCount: 1 }, { name: 'listings', maxCount: 1 }, { name: 'oms', maxCount: 60 }]), wrap(async (req, res) => {
+  const sold = req.files && req.files.sold && req.files.sold[0];
+  const listings = req.files && req.files.listings && req.files.listings[0];
+  const files = crexiFiles(req);
+  if (!sold && !listings && !files.length) return res.status(400).send(layout('Import Crexi week', '<h1>Choose a CSV or a PDF</h1><p><a href="/admin/import-crexi-weekly">Back</a></p>'));
+  const plan = await Crexi.planCrexi(db, {
+    soldRows: sold ? Crexi.parseCsv(sold.buffer.toString('utf8')) : [],
+    listingRows: listings ? Crexi.parseCsv(listings.buffer.toString('utf8')) : [],
+    files, week: req.body.week,
+  });
+  const token = crypto.randomBytes(16).toString('hex');
+  crexiPlans.set(token, { plan, expires: Date.now() + 30 * 60 * 1000 });
+  const line = (rows) => rows.map((r) => `<tr><td>${r.line || ''}</td><td>${esc(r.address || '')}</td><td>${esc(r.action)}</td><td class="small">${esc(r.reason || (r.propertyId ? 'linked to property #' + r.propertyId : ''))}</td></tr>`).join('');
+  const docs = plan.documents.map((d) => `<tr><td>${esc(d.filename)}</td><td>${esc(d.action)}</td><td class="small">${esc(d.reason || d.address || '')}</td></tr>`).join('');
+  const inserts = plan.sales.filter((r) => r.action === 'insert').length + plan.listings.filter((r) => r.action === 'insert').length;
+  res.send(layout('Preview Crexi week', `<h1>Preview ${esc(plan.source)}</h1>
+  <p class="muted">${inserts} comp${inserts === 1 ? '' : 's'} would be added. Nothing has been saved.</p>
+  <h2>Sold comps</h2>
+  ${plan.sales.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Row</th><th>Address</th><th></th><th>Note</th></tr></thead><tbody>${line(plan.sales)}</tbody></table></div>` : '<p class="muted">No sold file.</p>'}
+  <h2>New listings</h2>
+  ${plan.listings.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Row</th><th>Address</th><th></th><th>Note</th></tr></thead><tbody>${line(plan.listings)}</tbody></table></div>` : '<p class="muted">No listings file.</p>'}
+  <h2>Offering memorandums</h2>
+  ${plan.documents.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>File</th><th></th><th>Note</th></tr></thead><tbody>${docs}</tbody></table></div>` : '<p class="muted">No PDFs.</p>'}
+  ${inserts || plan.documents.some((d) => d.action === 'link') ? `<form method="post" action="/admin/import-crexi-weekly/apply" class="form"><input type="hidden" name="token" value="${esc(token)}"><button>Apply</button></form>` : ''}
+  <p><a href="/admin/import-crexi-weekly">Upload a different batch</a></p>`, { active: '' }));
+}));
+app.post('/admin/import-crexi-weekly/apply', wrap(async (req, res) => {
+  const held = crexiPlans.get(String(req.body.token || ''));
+  if (!held || held.expires < Date.now()) return res.status(400).send(layout('Import Crexi week', '<h1>Preview expired</h1><p><a href="/admin/import-crexi-weekly">Upload again</a></p>'));
+  const result = await Crexi.applyCrexi(db, held.plan);
+  crexiPlans.delete(String(req.body.token || ''));
+  res.send(layout('Crexi week imported', `<h1>Import applied</h1>
+  <p>${result.sales} sale comp${result.sales === 1 ? '' : 's'}, ${result.listings} listing${result.listings === 1 ? '' : 's'}, and ${result.documents} offering memorandum${result.documents === 1 ? '' : 's'} added. ${result.skipped} row${result.skipped === 1 ? '' : 's'} skipped.</p>
+  <p class="muted">Uploading this week again will not add a second copy.</p>
+  <p><a href="/admin/import-crexi-weekly">Import another batch</a></p>`, { active: '' }));
 }));
 
 app.use((err, req, res, next) => { console.error(err); res.status(500).send(layout('Error', `<h1>Something went wrong</h1><p class="muted">${esc(err.message)}</p>`)); });

@@ -88,6 +88,8 @@ Missing facts say **Unknown**. Asking prices are labeled asking and are not mixe
 
 Lease rows from the source `Crexi Inventory Export (medical office) 2026-11-06` keep their stored `rent_psf` value, but the screen labels it **NOI/SF** instead of actual rent. Later sources with an explicit rent still show as actual rent.
 
+A weekly Crexi file can be loaded at `/admin/import-crexi-weekly`. Sold comps and new listings are previewed, then saved unverified with the source `Crexi weekly YYYY-MM-DD`. Offering memorandum PDFs are stored in the database and linked from the property and the matching comp. A lease marked for sale shows that badge and its asking price. The import does not create properties or owners, and uploading the same week again adds nothing new.
+
 Buyers remain capped-sale only. The block is limited to medical and professional office comps.
 
 **Buyer Needs** is a separate list of what a buyer is looking for. Each need can point at a Buyers contact or stand on its own. Criteria are optional. A property field that is blank counts as unknown, and Strict hides those. Price and cap rate are the recorded sale unless a linked listing supplies an asking figure, which is labeled asking. Opening a match keeps Back to Buyer Need, and Previous and Next follow that match list.

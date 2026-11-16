@@ -51,6 +51,34 @@ ALTER TABLE sale_comps ADD COLUMN IF NOT EXISTS lat NUMERIC;
 ALTER TABLE sale_comps ADD COLUMN IF NOT EXISTS lng NUMERIC;
 ALTER TABLE lease_comps ADD COLUMN IF NOT EXISTS lat NUMERIC;
 ALTER TABLE lease_comps ADD COLUMN IF NOT EXISTS lng NUMERIC;
+ALTER TABLE sale_comps ADD COLUMN IF NOT EXISTS tenant TEXT;
+ALTER TABLE sale_comps ADD COLUMN IF NOT EXISTS lease_type TEXT;
+ALTER TABLE sale_comps ADD COLUMN IF NOT EXISTS lease_expiration DATE;
+ALTER TABLE sale_comps ADD COLUMN IF NOT EXISTS noi NUMERIC;
+ALTER TABLE sale_comps ADD COLUMN IF NOT EXISTS listing_broker TEXT;
+ALTER TABLE sale_comps ADD COLUMN IF NOT EXISTS listing_url TEXT;
+ALTER TABLE lease_comps ADD COLUMN IF NOT EXISTS for_sale BOOLEAN;
+ALTER TABLE lease_comps ADD COLUMN IF NOT EXISTS asking_price NUMERIC;
+ALTER TABLE lease_comps ADD COLUMN IF NOT EXISTS listing_url TEXT;
+ALTER TABLE lease_comps ADD COLUMN IF NOT EXISTS listing_source TEXT;
+ALTER TABLE lease_comps ADD COLUMN IF NOT EXISTS listed_at DATE;
+CREATE TABLE IF NOT EXISTS property_documents (
+  id SERIAL PRIMARY KEY,
+  property_id INT REFERENCES properties(id) ON DELETE SET NULL,
+  sale_comp_id INT REFERENCES sale_comps(id) ON DELETE CASCADE,
+  lease_comp_id INT REFERENCES lease_comps(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'om',
+  filename TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'application/pdf',
+  bytes BYTEA NOT NULL,
+  size INT NOT NULL,
+  source_url TEXT,
+  uploaded_at TIMESTAMPTZ DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_propdocs_property ON property_documents(property_id);
+CREATE INDEX IF NOT EXISTS idx_propdocs_sale ON property_documents(sale_comp_id);
+CREATE INDEX IF NOT EXISTS idx_propdocs_lease ON property_documents(lease_comp_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_propdocs_sale_file ON property_documents(sale_comp_id, filename) WHERE sale_comp_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_propdocs_lease_file ON property_documents(lease_comp_id, filename) WHERE lease_comp_id IS NOT NULL;
 `;
 const LEASE_TYPES = ['NNN', 'Modified Gross', 'Full Service', 'Other'];
 
